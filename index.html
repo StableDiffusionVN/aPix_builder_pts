@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./dist/main.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <div class="scrollArea">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">Photoshop to ComfyUI</div>
+            <h1>aPix Builder</h1>
+          </div>
+          <button id="refreshTemplatesBtn" class="iconButton" type="button" title="Reload templates">↻</button>
+        </header>
+
+        <section class="section">
+          <div class="sectionHeader">
+            <h2>Setting</h2>
+          </div>
+          <label class="field">
+            <span>ComfyUI server URL</span>
+            <input id="serverUrlInput" type="text" placeholder="http://127.0.0.1:8188" />
+          </label>
+          <div class="row">
+            <button id="saveSettingsBtn" type="button">Save</button>
+            <button id="testConnectionBtn" class="secondary" type="button">Test</button>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="sectionHeader">
+            <h2>Workflow</h2>
+            <button id="chooseTemplateFolderBtn" class="secondary" type="button">Folder</button>
+          </div>
+          <label class="field">
+            <span>Template</span>
+            <select id="templateSelect"></select>
+          </label>
+        </section>
+
+        <section class="section">
+          <div class="sectionHeader">
+            <h2 id="workflowTitle">Inputs</h2>
+          </div>
+          <form id="dynamicForm"></form>
+        </section>
+
+        <section class="section">
+          <div class="sectionHeader">
+            <h2>Output</h2>
+          </div>
+          <div id="outputList" class="outputList"></div>
+        </section>
+      </div>
+
+      <section class="section stickyFooter">
+        <div class="progressWrap">
+          <div id="statusText" class="statusText">Ready</div>
+          <progress id="progressBar" value="0" max="1" hidden></progress>
+        </div>
+        <div class="row">
+          <button id="runBtn" class="primary" type="button" data-action="run">Run Workflow</button>
+          <button id="cancelBtn" class="danger" type="button" disabled>Cancel</button>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>
