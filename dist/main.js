@@ -6613,12 +6613,7 @@ ${end.comment}` : end.comment;
   // node_modules/yaml/browser/index.js
   var browser_default = dist_exports;
 
-  // src/main.js
-  var photoshop = __require("photoshop");
-  var { app, core, imaging } = photoshop;
-  var { batchPlay } = photoshop.action;
-  var { storage } = __require("uxp");
-  var fs = __require("fs");
+  // src/state.js
   var BUILTIN_TEMPLATES = [
     "klein-edit-image",
     "fashion-flatlay",
@@ -6673,27 +6668,6 @@ ${end.comment}` : end.comment;
       preview.hidden = false;
     }
   }
-  function cloneData(value) {
-    if (typeof structuredClone === "function") return structuredClone(value);
-    return JSON.parse(JSON.stringify(value));
-  }
-  function createId() {
-    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-    return `apix-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-  function delay(ms, signal) {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(resolve, ms);
-      signal?.addEventListener("abort", () => {
-        clearTimeout(timeout);
-        reject(new Error("Request cancelled"));
-      }, { once: true });
-    });
-  }
-  function isImageInputItem(item) {
-    const type = String(item?.ui?.type || "").toLowerCase();
-    return type === "image" || type === "image_mask" || type === "file";
-  }
   function readSettings() {
     try {
       return { serverUrl: DEFAULT_SERVER, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") };
@@ -6706,130 +6680,15 @@ ${end.comment}` : end.comment;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
     setStatus("Saved settings");
   }
-  function isLocalHost(hostname) {
-    const host = String(hostname || "").toLowerCase();
-    if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host.endsWith(".local")) return true;
-    if (/^127(?:\.\d{1,3}){3}$/.test(host)) return true;
-    if (/^10(?:\.\d{1,3}){3}$/.test(host)) return true;
-    if (/^192\.168(?:\.\d{1,3}){2}$/.test(host)) return true;
-    if (/^172\.(1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}$/.test(host)) return true;
-    return false;
-  }
-  function normalizeComfyTarget(rawAddress) {
-    if (!rawAddress) throw new Error("Missing ComfyUI server URL");
-    let value = String(rawAddress).trim().replace(/\/+$/, "");
-    if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
-    let url = new URL(value);
-    if (url.protocol === "http:" && !isLocalHost(url.hostname)) {
-      url.protocol = "https:";
-    }
-    const wsProtocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const username = decodeURIComponent(url.username || "");
-    const password = decodeURIComponent(url.password || "");
-    const authHeader = username || password ? `Basic ${btoa(`${username}:${password}`)}` : null;
-    const authPart = username || password ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : "";
-    return {
-      label: `${url.protocol}//${authPart}${url.host}`,
-      httpBase: url.origin,
-      wsBase: `${wsProtocol}//${authPart}${url.host}`,
-      headers: authHeader ? { authorization: authHeader } : {}
-    };
-  }
-  function flattenInputs(input = {}) {
-    const items = [];
-    for (const [key, item] of Object.entries(input)) {
-      if (item?.ui?.type === "col") {
-        for (const [childKey, child] of Object.entries(item.ui.col || {})) {
-          items.push({ key: `${key}.${childKey}`, ...child });
-        }
-      } else {
-        items.push({ key, ...item });
-      }
-    }
-    return items;
-  }
   function normalizeId(id) {
     return Array.isArray(id) ? id.join("|") : String(id);
   }
-  function defaultValue(item) {
-    const ui = item.ui || {};
-    const type = String(ui.type || "").toLowerCase();
-    if (type === "seed") return "random_seed";
-    if (type === "checkbox") return Boolean(ui.value);
-    if (type === "boolean") return ui.value === true || ui.value === "true" ? true : false;
-    if (type === "number" || type === "int" || type === "float" || type === "slider") return ui.value ?? ui.minimum ?? 0;
-    if (type === "dropdown" || type === "menu" || type === "radio") return ui.value ?? ui.choices?.[0] ?? "";
-    if (type === "colorpicker") return ui.value || "#10b981";
-    if (type === "date") return ui.value || "";
-    if (type === "json") return ui.value || "{}";
-    if (canonicalDynamicType(type)) return ui.value ?? "";
-    return ui.value ?? "";
-  }
-  function buildDefaults(items) {
-    const values = {};
-    for (const item of items) {
-      if (!item.id) continue;
-      values[normalizeId(item.id)] = defaultValue(item);
-    }
-    return values;
-  }
-  function requestPayload(items, values) {
-    const payload = {};
-    for (const item of items) {
-      if (!item.id) continue;
-      const key = normalizeId(item.id);
-      const value = values[key];
-      if (Array.isArray(item.id)) {
-        item.id.forEach((id, index) => {
-          payload[id] = Array.isArray(value) ? value[index] : value;
-        });
-      } else {
-        payload[item.id] = value;
-      }
-    }
-    return payload;
-  }
-  function resolveWorkflowInput(workflow, id) {
-    const parts = String(id).split("-");
-    if (parts.length < 2) throw new Error(`Invalid YAML id "${id}". Expected "node-field".`);
-    const [nodeId] = parts;
-    const hasSection = parts.length >= 3;
-    const section = hasSection ? parts[1] : "inputs";
-    const requestedField = (hasSection ? parts.slice(2) : parts.slice(1)).join("-");
-    const node = workflow[nodeId];
-    if (!node) throw new Error(`Workflow node not found: ${nodeId}`);
-    const nodeInputs = node[section];
-    if (!nodeInputs) throw new Error(`Workflow path not found: ${nodeId}.${section}`);
-    const field = Object.keys(nodeInputs).find((key) => key === requestedField) || Object.keys(nodeInputs).find((key) => key.toLowerCase() === requestedField.toLowerCase());
-    if (!field) throw new Error(`Workflow field not found: ${nodeId}.${section}.${requestedField}`);
-    return { nodeInputs, section, field };
-  }
-  function validateWorkflowMappings(config, workflow) {
-    for (const item of flattenInputs(config.input || {})) {
-      if (!item.id) continue;
-      const ids = Array.isArray(item.id) ? item.id : [item.id];
-      ids.forEach((id) => resolveWorkflowInput(workflow, id));
-    }
-    for (const item of Object.values(config.output || {})) {
-      const nodeId = String(item.id || "");
-      if (!nodeId || !workflow[nodeId]) throw new Error(`Workflow output node not found: ${nodeId}`);
-    }
-  }
-  function parseDataUrl(dataUrl) {
-    const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || "");
-    if (!match) return null;
-    return {
-      mimeType: match[1],
-      base64: match[2],
-      blob: base64ToBlob(match[2], match[1])
-    };
-  }
-  function base64ToBlob(base64, mimeType) {
-    const binary2 = atob(base64);
-    const bytes = new Uint8Array(binary2.length);
-    for (let i = 0; i < binary2.length; i += 1) bytes[i] = binary2.charCodeAt(i);
-    return new Blob([bytes], { type: mimeType });
-  }
+
+  // src/services/photoshop.js
+  var photoshop = __require("photoshop");
+  var { app, core, imaging } = photoshop;
+  var { batchPlay } = photoshop.action;
+  var { storage } = __require("uxp");
   async function readUxFileAsDataUrl(file) {
     const bytes = await file.read({ format: storage.formats.binary });
     const ext = String(file.name || "").toLowerCase();
@@ -7004,185 +6863,6 @@ ${end.comment}` : end.comment;
     }, { commandName: "Export aPix input" });
     return readUxFileAsDataUrl(file);
   }
-  async function uploadImageToComfy(target, upload, signal) {
-    const extension = upload.mimeType.includes("jpeg") ? "jpg" : upload.mimeType.split("/")[1] || "png";
-    const filename = `apix_ps_${Date.now()}_${upload.index}.${extension}`;
-    setStatus(`Uploading image input ${upload.index + 1}...`);
-    const form = new FormData();
-    form.append("image", upload.blob, filename);
-    form.append("type", "input");
-    form.append("overwrite", "true");
-    const response = await fetch(`${target.httpBase}/upload/image`, {
-      method: "POST",
-      headers: target.headers,
-      body: form,
-      signal
-    });
-    if (!response.ok) throw new Error(`ComfyUI /upload/image failed: ${response.status} ${await response.text()}`);
-    return response.json();
-  }
-  function uploadedName(uploaded) {
-    return uploaded.name || uploaded.filename || uploaded.image || uploaded;
-  }
-  async function normalizeValues(values) {
-    const normalized = {};
-    let fileIndex = 0;
-    for (const [key, value] of Object.entries(values || {})) {
-      if (value === "random_seed") {
-        normalized[key] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
-      } else if (typeof value === "string" && value.startsWith("data:")) {
-        normalized[key] = { kind: "upload", index: fileIndex++, ...parseDataUrl(value) };
-      } else {
-        normalized[key] = value;
-      }
-    }
-    return normalized;
-  }
-  async function setWorkflowValue(workflow, id, value, target, signal) {
-    const { nodeInputs, section, field } = resolveWorkflowInput(workflow, id);
-    if (value?.kind === "upload") {
-      const uploaded = await uploadImageToComfy(target, value, signal);
-      if (section === "inputs" && field.toLowerCase() === "url") {
-        const query = new URLSearchParams({ filename: uploadedName(uploaded), subfolder: uploaded.subfolder || "", type: uploaded.type || "input" });
-        if ("Load_url" in nodeInputs) nodeInputs.Load_url = true;
-        if ("mode" in nodeInputs) nodeInputs.mode = "Url";
-        if ("image" in nodeInputs) nodeInputs.image = "None";
-        nodeInputs[field] = `${target.label}/view?${query.toString()}`;
-        return;
-      }
-      if (section === "inputs" && "image" in nodeInputs) {
-        if ("Load_url" in nodeInputs) nodeInputs.Load_url = false;
-        if ("Url" in nodeInputs) nodeInputs.Url = "";
-        if ("url" in nodeInputs) nodeInputs.url = "";
-        if ("mode" in nodeInputs) nodeInputs.mode = "Image";
-        nodeInputs.image = uploadedName(uploaded);
-        return;
-      }
-    }
-    nodeInputs[field] = value;
-  }
-  async function queuePrompt(target, workflow, clientId, signal) {
-    const response = await fetch(`${target.httpBase}/prompt`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...target.headers },
-      body: JSON.stringify({ prompt: workflow, client_id: clientId }),
-      signal
-    });
-    if (!response.ok) throw new Error(`ComfyUI /prompt failed: ${response.status} ${await response.text()}`);
-    const queued = await response.json();
-    if (queued.node_errors && Object.keys(queued.node_errors).length) {
-      throw new Error(`ComfyUI validation failed: ${JSON.stringify(queued.node_errors)}`);
-    }
-    if (!queued.prompt_id) throw new Error(`ComfyUI did not return prompt_id: ${JSON.stringify(queued)}`);
-    return queued;
-  }
-  function waitForPrompt(target, promptId, clientId, signal) {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`${target.wsBase}/ws?clientId=${clientId}`);
-      state.activeWebSocket = ws;
-      let settled = false;
-      const finish = (fn, value) => {
-        if (settled) return;
-        settled = true;
-        try {
-          ws.close();
-        } catch {
-        }
-        state.activeWebSocket = null;
-        fn(value);
-      };
-      signal.addEventListener("abort", () => finish(reject, new Error("Request cancelled")), { once: true });
-      ws.addEventListener("message", (event) => {
-        if (typeof event.data !== "string") return;
-        const message = JSON.parse(event.data);
-        const data = message.data || {};
-        if (data.prompt_id && data.prompt_id !== promptId) return;
-        if (message.type === "progress") setProgress(data.value, data.max);
-        if (message.type === "executing" && data.node) setStatus(`Processing node ${data.node}...`);
-        if (message.type === "execution_error") {
-          const detail = data.exception_message || data.exception_type || JSON.stringify(data);
-          finish(reject, new Error(`ComfyUI execution error: ${detail}`));
-        }
-        if (message.type === "execution_interrupted") finish(reject, new Error("ComfyUI execution interrupted"));
-        if (message.type === "executing" && data.node === null && data.prompt_id === promptId) finish(resolve);
-      });
-      ws.addEventListener("error", () => finish(reject, new Error("ComfyUI websocket error")));
-      ws.addEventListener("close", () => {
-        if (!settled) finish(reject, new Error("ComfyUI websocket closed before completion"));
-      });
-    });
-  }
-  async function getHistory(target, promptId, signal) {
-    const response = await fetch(`${target.httpBase}/history/${promptId}`, {
-      headers: target.headers,
-      signal
-    });
-    if (!response.ok) throw new Error(`ComfyUI /history failed: ${response.status} ${await response.text()}`);
-    return response.json();
-  }
-  async function waitForPromptHistory(target, promptId, signal) {
-    while (!signal?.aborted) {
-      const history = await getHistory(target, promptId, signal);
-      if (history?.[promptId]) return history;
-      await delay(800, signal);
-    }
-    throw new Error("Request cancelled");
-  }
-  async function waitForPromptCompletion(target, promptId, clientId, signal) {
-    let websocketError = null;
-    await Promise.race([
-      waitForPrompt(target, promptId, clientId, signal).catch((error) => {
-        if (/execution error|execution interrupted/i.test(error.message || "")) throw error;
-        websocketError = error;
-        return waitForPromptHistory(target, promptId, signal);
-      }),
-      waitForPromptHistory(target, promptId, signal)
-    ]);
-    if (websocketError) {
-      console.warn("ComfyUI websocket wait failed, completed through history polling", websocketError);
-    }
-  }
-  function collectOutputs(config, history, target) {
-    const outputIds = Object.values(config.output || {}).map((item) => String(item.id));
-    const outputs = [];
-    for (const nodeId of outputIds) {
-      const images = history?.outputs?.[nodeId]?.images || [];
-      for (const image of images) {
-        const query = new URLSearchParams({
-          filename: image.filename,
-          subfolder: image.subfolder || "",
-          type: image.type || "output"
-        });
-        outputs.push({ nodeId, filename: image.filename, url: `${target.label}/view?${query.toString()}`, headers: target.headers });
-      }
-    }
-    if (!outputs.length) {
-      for (const [nodeId, output] of Object.entries(history?.outputs || {})) {
-        for (const image of output?.images || []) {
-          const query = new URLSearchParams({
-            filename: image.filename,
-            subfolder: image.subfolder || "",
-            type: image.type || "output"
-          });
-          outputs.push({ nodeId, filename: image.filename, url: `${target.label}/view?${query.toString()}`, headers: target.headers });
-        }
-      }
-    }
-    return outputs;
-  }
-  async function fetchOutputBytes(output, signal) {
-    const response = await fetch(output.url, {
-      headers: output.headers || {},
-      signal
-    });
-    if (!response.ok) {
-      throw new Error(`${response.status} ${await response.text()}`);
-    }
-    return {
-      buffer: await response.arrayBuffer(),
-      mimeType: response.headers.get("content-type") || "image/png"
-    };
-  }
   function layerBounds(layer) {
     const bounds = layer?.bounds || layer?.boundsNoEffects;
     if (!bounds) return null;
@@ -7268,177 +6948,8 @@ ${end.comment}` : end.comment;
     if (fitBounds) await transformActiveLayerToBounds(fitBounds);
     return placedLayer;
   }
-  async function importOutputAsLayer(output, signal, fitBounds = null) {
-    const { buffer } = await fetchOutputBytes(output, signal);
-    return importBufferAsLayer(buffer, output.filename, fitBounds);
-  }
-  async function testConnection() {
-    try {
-      const raw = els.serverUrlInput.value.trim() || DEFAULT_SERVER;
-      const target = normalizeComfyTarget(raw);
-      state.settings.serverUrl = target.label;
-      els.serverUrlInput.value = target.label;
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
-      setStatus("Connecting...");
-      const response = await fetch(`${target.httpBase}/system_stats`, {
-        headers: target.headers,
-        credentials: "omit"
-      });
-      if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
-      setStatus("\u2713 Saved \u2014 ComfyUI connected");
-      fetchServerChoices().then(() => updateServerSelects()).catch(() => {
-      });
-    } catch (error) {
-      const msg = error.message || String(error);
-      if (/failed to fetch|network|blocked|insecure/i.test(msg)) {
-        setStatus(`Connection failed: plugin may be blocking HTTP \u2014 reload plugin after saving`);
-      } else {
-        setStatus(`Connection failed: ${msg}`);
-      }
-    }
-  }
-  async function loadBuiltInTemplate(id) {
-    const yamlRaw = fs.readFileSync(`plugin:templates/${id}/app_build.yaml`, "utf8");
-    const workflow = JSON.parse(fs.readFileSync(`plugin:templates/${id}/api.json`, "utf8"));
-    const config = browser_default.parse(yamlRaw);
-    return { id, name: config?.app?.name || id, source: "bundled", config, workflow };
-  }
-  async function readFolderText(folder, name) {
-    const file = await folder.getEntry(name);
-    return file.read();
-  }
-  async function loadFolderTemplate(folder) {
-    const yamlRaw = await readFolderText(folder, "app_build.yaml");
-    const apiRaw = await readFolderText(folder, "api.json");
-    const config = browser_default.parse(yamlRaw);
-    return {
-      id: `folder:${folder.name}`,
-      name: `${config?.app?.name || folder.name} (folder)`,
-      source: "folder",
-      folder,
-      config,
-      workflow: JSON.parse(apiRaw)
-    };
-  }
-  async function loadTemplates() {
-    const templates = [];
-    const errors = [];
-    for (const id of BUILTIN_TEMPLATES) {
-      try {
-        templates.push(await loadBuiltInTemplate(id));
-      } catch (error) {
-        errors.push(`${id}: ${error.message}`);
-        console.warn(`Failed to load bundled template ${id}`, error);
-      }
-    }
-    try {
-      const token = localStorage.getItem(TEMPLATE_FOLDER_KEY);
-      if (token) {
-        const folder = await storage.localFileSystem.getEntryForPersistentToken(token);
-        templates.push(await loadFolderTemplate(folder));
-      }
-    } catch (error) {
-      console.warn("Stored template folder is no longer available", error);
-    }
-    state.templates = templates;
-    els.templateSelect.innerHTML = "";
-    for (const template of templates) {
-      const option = document.createElement("option");
-      option.value = template.id;
-      option.textContent = template.name;
-      els.templateSelect.append(option);
-    }
-    if (templates.length) {
-      await selectTemplate(templates[0].id);
-    } else {
-      setStatus(errors.length ? `No templates found: ${errors[0]}` : "No templates found");
-    }
-  }
-  async function chooseTemplateFolder() {
-    try {
-      const folder = await storage.localFileSystem.getFolder();
-      const token = await storage.localFileSystem.createPersistentToken(folder);
-      localStorage.setItem(TEMPLATE_FOLDER_KEY, token);
-      const template = await loadFolderTemplate(folder);
-      state.templates = state.templates.filter((item) => item.source !== "folder").concat(template);
-      await refreshTemplateSelect(template.id);
-      setStatus(`Loaded ${template.name}`);
-    } catch (error) {
-      setStatus(`Cannot load folder: ${error.message}`);
-    }
-  }
-  async function refreshTemplateSelect(selectedId) {
-    els.templateSelect.innerHTML = "";
-    for (const template of state.templates) {
-      const option = document.createElement("option");
-      option.value = template.id;
-      option.textContent = template.name;
-      els.templateSelect.append(option);
-    }
-    await selectTemplate(selectedId || state.templates[0]?.id);
-  }
-  async function selectTemplate(id) {
-    const template = state.templates.find((item) => item.id === id);
-    if (!template) return;
-    try {
-      state.selectedTemplate = template;
-      state.config = cloneData(template.config);
-      state.workflow = cloneData(template.workflow);
-      validateWorkflowMappings(state.config, state.workflow);
-      const inputs = flattenInputs(state.config.input || {});
-      state.values = buildDefaults(inputs);
-      state.imageValues = {};
-      state.imageSources = {};
-      state.imagePreviews = {};
-      els.templateSelect.value = id;
-      els.workflowTitle.textContent = state.config?.app?.name || template.name;
-      renderDynamicForm(inputs);
-      setStatus(`Loaded workflow ${template.name}`);
-      fetchServerChoices().then(() => updateServerSelects()).catch(() => {
-      });
-    } catch (error) {
-      state.selectedTemplate = null;
-      state.config = null;
-      state.workflow = null;
-      state.values = {};
-      state.imageValues = {};
-      state.imageSources = {};
-      state.imagePreviews = {};
-      els.dynamicForm.innerHTML = "";
-      els.workflowTitle.textContent = "Inputs";
-      setStatus(`Workflow load failed: ${error.message}`);
-    }
-  }
-  function selectedTemplateId() {
-    const selected = els.templateSelect.options?.[els.templateSelect.selectedIndex];
-    return selected?.value || els.templateSelect.value;
-  }
-  function markdownToHtml(text) {
-    return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="#" data-href="${url}" style="color:var(--accent)">${label}</a>`).replace(/\n/g, "<br>");
-  }
-  function renderSeedField(key) {
-    const wrap = document.createElement("div");
-    wrap.className = "seedField";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = "random_seed";
-    input.value = state.values[key] === "random_seed" ? "" : state.values[key] ?? "";
-    input.addEventListener("input", () => {
-      const v = input.value.trim();
-      state.values[key] = v === "" ? "random_seed" : Number.isFinite(Number(v)) ? Number(v) : "random_seed";
-    });
-    const randBtn = document.createElement("button");
-    randBtn.type = "button";
-    randBtn.textContent = "\u{1F3B2}";
-    randBtn.title = "Use random seed";
-    randBtn.className = "iconButton seedRandom";
-    randBtn.addEventListener("click", () => {
-      input.value = "";
-      state.values[key] = "random_seed";
-    });
-    wrap.append(input, randBtn);
-    return wrap;
-  }
+
+  // src/services/comfy.js
   var DYNAMIC_TYPE_REGISTRY = {
     checkpoints: { aliases: ["checkpoint", "ckpt"], node: "CheckpointLoaderSimple", field: "ckpt_name" },
     loras: { aliases: ["lora"], node: "LoraLoader", field: "lora_name" },
@@ -7463,6 +6974,300 @@ ${end.comment}` : end.comment;
   })();
   function canonicalDynamicType(type) {
     return DYNAMIC_TYPE_ALIAS_MAP[String(type || "").toLowerCase()] || "";
+  }
+  var sessionClientId = null;
+  function getClientId() {
+    if (!sessionClientId) {
+      if (globalThis.crypto?.randomUUID) {
+        sessionClientId = globalThis.crypto.randomUUID();
+      } else {
+        sessionClientId = `apix-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+    }
+    return sessionClientId;
+  }
+  var promptListeners = /* @__PURE__ */ new Map();
+  var socketUrl = null;
+  function handleWebSocketMessage(event) {
+    if (typeof event.data !== "string") return;
+    try {
+      const message = JSON.parse(event.data);
+      const data = message.data || {};
+      const promptId = data.prompt_id;
+      if (!promptId) return;
+      const listener = promptListeners.get(promptId);
+      if (!listener) return;
+      if (message.type === "progress") {
+        setProgress(data.value, data.max);
+      }
+      if (message.type === "executing" && data.node) {
+        setStatus(`Processing node ${data.node}...`);
+      }
+      if (message.type === "execution_error") {
+        const detail = data.exception_message || data.exception_type || JSON.stringify(data);
+        listener.reject(new Error(`ComfyUI execution error: ${detail}`));
+        promptListeners.delete(promptId);
+      }
+      if (message.type === "execution_interrupted") {
+        listener.reject(new Error("ComfyUI execution interrupted"));
+        promptListeners.delete(promptId);
+      }
+      if (message.type === "executing" && data.node === null) {
+        listener.resolve();
+        promptListeners.delete(promptId);
+      }
+    } catch (error) {
+      console.error("Error processing websocket message", error);
+    }
+  }
+  function handleWebSocketClose() {
+    setStatus("WebSocket connection closed");
+    state.activeWebSocket = null;
+    socketUrl = null;
+    for (const [promptId, listener] of promptListeners.entries()) {
+      listener.reject(new Error("ComfyUI websocket closed before completion"));
+      promptListeners.delete(promptId);
+    }
+  }
+  function handleWebSocketError() {
+    setStatus("WebSocket connection error");
+  }
+  function connectWebSocket(target) {
+    const wsUrl = `${target.wsBase}/ws?clientId=${getClientId()}`;
+    if (state.activeWebSocket) {
+      if (socketUrl !== wsUrl) {
+        try {
+          state.activeWebSocket.close();
+        } catch {
+        }
+        state.activeWebSocket = null;
+      } else if (state.activeWebSocket.readyState === WebSocket.OPEN) {
+        return state.activeWebSocket;
+      } else if (state.activeWebSocket.readyState === WebSocket.CONNECTING) {
+        return state.activeWebSocket;
+      }
+    }
+    setStatus("Opening WebSocket...");
+    const ws = new WebSocket(wsUrl);
+    state.activeWebSocket = ws;
+    socketUrl = wsUrl;
+    ws.addEventListener("message", handleWebSocketMessage);
+    ws.addEventListener("close", handleWebSocketClose);
+    ws.addEventListener("error", handleWebSocketError);
+    return ws;
+  }
+  function isLocalHost(hostname) {
+    const host = String(hostname || "").toLowerCase();
+    if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host.endsWith(".local")) return true;
+    if (/^127(?:\.\d{1,3}){3}$/.test(host)) return true;
+    if (/^10(?:\.\d{1,3}){3}$/.test(host)) return true;
+    if (/^192\.168(?:\.\d{1,3}){2}$/.test(host)) return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}$/.test(host)) return true;
+    return false;
+  }
+  function normalizeComfyTarget(rawAddress) {
+    if (!rawAddress) throw new Error("Missing ComfyUI server URL");
+    let value = String(rawAddress).trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
+    let url = new URL(value);
+    if (url.protocol === "http:" && !isLocalHost(url.hostname)) {
+      url.protocol = "https:";
+    }
+    const wsProtocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const username = decodeURIComponent(url.username || "");
+    const password = decodeURIComponent(url.password || "");
+    const authHeader = username || password ? `Basic ${btoa(`${username}:${password}`)}` : null;
+    const authPart = username || password ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : "";
+    return {
+      label: `${url.protocol}//${authPart}${url.host}`,
+      httpBase: url.origin,
+      wsBase: `${wsProtocol}//${authPart}${url.host}`,
+      headers: authHeader ? { authorization: authHeader } : {}
+    };
+  }
+  function parseDataUrl(dataUrl) {
+    const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || "");
+    if (!match) return null;
+    return {
+      mimeType: match[1],
+      base64: match[2],
+      blob: base64ToBlob(match[2], match[1])
+    };
+  }
+  function base64ToBlob(base64, mimeType) {
+    const binary2 = atob(base64);
+    const bytes = new Uint8Array(binary2.length);
+    for (let i = 0; i < binary2.length; i += 1) bytes[i] = binary2.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType });
+  }
+  async function uploadImageToComfy(target, upload, signal) {
+    const extension = upload.mimeType.includes("jpeg") ? "jpg" : upload.mimeType.split("/")[1] || "png";
+    const filename = `apix_ps_${Date.now()}_${upload.index}.${extension}`;
+    setStatus(`Uploading image input ${upload.index + 1}...`);
+    const form = new FormData();
+    form.append("image", upload.blob, filename);
+    form.append("type", "input");
+    form.append("overwrite", "true");
+    const response = await fetch(`${target.httpBase}/upload/image`, {
+      method: "POST",
+      headers: target.headers,
+      body: form,
+      signal
+    });
+    if (!response.ok) throw new Error(`ComfyUI /upload/image failed: ${response.status} ${await response.text()}`);
+    return response.json();
+  }
+  function uploadedName(uploaded) {
+    return uploaded.name || uploaded.filename || uploaded.image || uploaded;
+  }
+  function resolveWorkflowInput(workflow, id) {
+    const parts = String(id).split("-");
+    if (parts.length < 2) throw new Error(`Invalid YAML id "${id}". Expected "node-field".`);
+    const [nodeId] = parts;
+    const hasSection = parts.length >= 3;
+    const section = hasSection ? parts[1] : "inputs";
+    const requestedField = (hasSection ? parts.slice(2) : parts.slice(1)).join("-");
+    const node = workflow[nodeId];
+    if (!node) throw new Error(`Workflow node not found: ${nodeId}`);
+    const nodeInputs = node[section];
+    if (!nodeInputs) throw new Error(`Workflow path not found: ${nodeId}.${section}`);
+    const field = Object.keys(nodeInputs).find((key) => key === requestedField) || Object.keys(nodeInputs).find((key) => key.toLowerCase() === requestedField.toLowerCase());
+    if (!field) throw new Error(`Workflow field not found: ${nodeId}.${section}.${requestedField}`);
+    return { nodeInputs, section, field };
+  }
+  async function setWorkflowValue(workflow, id, value, target, signal) {
+    const { nodeInputs, section, field } = resolveWorkflowInput(workflow, id);
+    if (value?.kind === "upload") {
+      const uploaded = await uploadImageToComfy(target, value, signal);
+      if (section === "inputs" && field.toLowerCase() === "url") {
+        const query = new URLSearchParams({ filename: uploadedName(uploaded), subfolder: uploaded.subfolder || "", type: uploaded.type || "input" });
+        if ("Load_url" in nodeInputs) nodeInputs.Load_url = true;
+        if ("mode" in nodeInputs) nodeInputs.mode = "Url";
+        if ("image" in nodeInputs) nodeInputs.image = "None";
+        nodeInputs[field] = `${target.label}/view?${query.toString()}`;
+        return;
+      }
+      if (section === "inputs" && "image" in nodeInputs) {
+        if ("Load_url" in nodeInputs) nodeInputs.Load_url = false;
+        if ("Url" in nodeInputs) nodeInputs.Url = "";
+        if ("url" in nodeInputs) nodeInputs.url = "";
+        if ("mode" in nodeInputs) nodeInputs.mode = "Image";
+        nodeInputs.image = uploadedName(uploaded);
+        return;
+      }
+    }
+    nodeInputs[field] = value;
+  }
+  async function queuePrompt(target, workflow, signal) {
+    const response = await fetch(`${target.httpBase}/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...target.headers },
+      body: JSON.stringify({ prompt: workflow, client_id: getClientId() }),
+      signal
+    });
+    if (!response.ok) throw new Error(`ComfyUI /prompt failed: ${response.status} ${await response.text()}`);
+    const queued = await response.json();
+    if (queued.node_errors && Object.keys(queued.node_errors).length) {
+      throw new Error(`ComfyUI validation failed: ${JSON.stringify(queued.node_errors)}`);
+    }
+    if (!queued.prompt_id) throw new Error(`ComfyUI did not return prompt_id: ${JSON.stringify(queued)}`);
+    return queued;
+  }
+  async function getHistory(target, promptId, signal) {
+    const response = await fetch(`${target.httpBase}/history/${promptId}`, {
+      headers: target.headers,
+      signal
+    });
+    if (!response.ok) throw new Error(`ComfyUI /history failed: ${response.status} ${await response.text()}`);
+    return response.json();
+  }
+  function delay(ms, signal) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(resolve, ms);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timeout);
+        reject(new Error("Request cancelled"));
+      }, { once: true });
+    });
+  }
+  async function waitForPromptHistory(target, promptId, signal) {
+    while (!signal?.aborted) {
+      const history = await getHistory(target, promptId, signal);
+      if (history?.[promptId]) return history;
+      await delay(800, signal);
+    }
+    throw new Error("Request cancelled");
+  }
+  function waitForPrompt(target, promptId, signal) {
+    return new Promise((resolve, reject) => {
+      promptListeners.set(promptId, { resolve, reject });
+      try {
+        connectWebSocket(target);
+      } catch (wsError) {
+        promptListeners.delete(promptId);
+        reject(wsError);
+        return;
+      }
+      signal?.addEventListener("abort", () => {
+        promptListeners.delete(promptId);
+        reject(new Error("Request cancelled"));
+      }, { once: true });
+    });
+  }
+  async function waitForPromptCompletion(target, promptId, signal) {
+    let websocketError = null;
+    await Promise.race([
+      waitForPrompt(target, promptId, signal).catch((error) => {
+        if (/execution error|execution interrupted/i.test(error.message || "")) throw error;
+        websocketError = error;
+        return waitForPromptHistory(target, promptId, signal);
+      }),
+      waitForPromptHistory(target, promptId, signal)
+    ]);
+    if (websocketError) {
+      console.warn("ComfyUI websocket wait failed, completed through history polling", websocketError);
+    }
+  }
+  function collectOutputs(config, history, target) {
+    const outputIds = Object.values(config.output || {}).map((item) => String(item.id));
+    const outputs = [];
+    for (const nodeId of outputIds) {
+      const images = history?.outputs?.[nodeId]?.images || [];
+      for (const image of images) {
+        const query = new URLSearchParams({
+          filename: image.filename,
+          subfolder: image.subfolder || "",
+          type: image.type || "output"
+        });
+        outputs.push({ nodeId, filename: image.filename, url: `${target.label}/view?${query.toString()}`, headers: target.headers });
+      }
+    }
+    if (!outputs.length) {
+      for (const [nodeId, output] of Object.entries(history?.outputs || {})) {
+        for (const image of output?.images || []) {
+          const query = new URLSearchParams({
+            filename: image.filename,
+            subfolder: image.subfolder || "",
+            type: image.type || "output"
+          });
+          outputs.push({ nodeId, filename: image.filename, url: `${target.label}/view?${query.toString()}`, headers: target.headers });
+        }
+      }
+    }
+    return outputs;
+  }
+  async function fetchOutputBytes(output, signal) {
+    const response = await fetch(output.url, {
+      headers: output.headers || {},
+      signal
+    });
+    if (!response.ok) {
+      throw new Error(`${response.status} ${await response.text()}`);
+    }
+    return {
+      buffer: await response.arrayBuffer(),
+      mimeType: response.headers.get("content-type") || "image/png"
+    };
   }
   async function fetchServerChoices() {
     if (!state.settings.serverUrl) return;
@@ -7492,6 +7297,21 @@ ${end.comment}` : end.comment;
     } catch (error) {
       console.warn("fetchServerChoices failed", error);
     }
+  }
+
+  // src/ui/form.js
+  var { storage: storage2 } = __require("uxp");
+  function markdownToHtml(text) {
+    return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="#" data-href="${url}" style="color:var(--accent)">${label}</a>`).replace(/\n/g, "<br>");
+  }
+  async function readUxFileAsDataUrl2(file) {
+    const bytes = await file.read({ format: storage2.formats.binary });
+    const ext = String(file.name || "").toLowerCase();
+    const mime = ext.endsWith(".jpg") || ext.endsWith(".jpeg") ? "image/jpeg" : ext.endsWith(".webp") ? "image/webp" : "image/png";
+    let binary2 = "";
+    const buffer = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer || bytes);
+    for (let i = 0; i < buffer.length; i += 1) binary2 += String.fromCharCode(buffer[i]);
+    return `data:${mime};base64,${btoa(binary2)}`;
   }
   function updateServerSelects() {
     const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
@@ -7681,10 +7501,10 @@ ${end.comment}` : end.comment;
     });
     choose.addEventListener("click", async () => {
       try {
-        const file = await storage.localFileSystem.getFileForOpening({
+        const file = await storage2.localFileSystem.getFileForOpening({
           types: ["png", "jpg", "jpeg", "webp"]
         });
-        const dataUrl = await readUxFileAsDataUrl(file);
+        const dataUrl = await readUxFileAsDataUrl2(file);
         setImageValue(dataUrl, "file");
         setStatus(`Selected ${file.name}`);
       } catch (error) {
@@ -7800,6 +7620,261 @@ ${end.comment}` : end.comment;
     wrap.append(input);
     return wrap;
   }
+  function renderSeedField(key) {
+    const wrap = document.createElement("div");
+    wrap.className = "seedField";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "random_seed";
+    input.value = state.values[key] === "random_seed" ? "" : state.values[key] ?? "";
+    input.addEventListener("input", () => {
+      const v = input.value.trim();
+      state.values[key] = v === "" ? "random_seed" : Number.isFinite(Number(v)) ? Number(v) : "random_seed";
+    });
+    const randBtn = document.createElement("button");
+    randBtn.type = "button";
+    randBtn.textContent = "\u{1F3B2}";
+    randBtn.title = "Use random seed";
+    randBtn.className = "iconButton seedRandom";
+    randBtn.addEventListener("click", () => {
+      input.value = "";
+      state.values[key] = "random_seed";
+    });
+    wrap.append(input, randBtn);
+    return wrap;
+  }
+
+  // src/main.js
+  var fs = __require("fs");
+  var { storage: storage3 } = __require("uxp");
+  function cloneData(value) {
+    if (typeof structuredClone === "function") return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+  function isImageInputItem(item) {
+    const type = String(item?.ui?.type || "").toLowerCase();
+    return type === "image" || type === "image_mask" || type === "file";
+  }
+  function flattenInputs(input = {}) {
+    const items = [];
+    for (const [key, item] of Object.entries(input)) {
+      if (item?.ui?.type === "col") {
+        for (const [childKey, child] of Object.entries(item.ui.col || {})) {
+          items.push({ key: `${key}.${childKey}`, ...child });
+        }
+      } else {
+        items.push({ key, ...item });
+      }
+    }
+    return items;
+  }
+  function normalizeId2(id) {
+    return Array.isArray(id) ? id.join("|") : String(id);
+  }
+  function defaultValue(item) {
+    const ui = item.ui || {};
+    const type = String(ui.type || "").toLowerCase();
+    if (type === "seed") return "random_seed";
+    if (type === "checkbox") return Boolean(ui.value);
+    if (type === "boolean") return ui.value === true || ui.value === "true" ? true : false;
+    if (type === "number" || type === "int" || type === "float" || type === "slider") return ui.value ?? ui.minimum ?? 0;
+    if (type === "dropdown" || type === "menu" || type === "radio") return ui.value ?? ui.choices?.[0] ?? "";
+    if (type === "colorpicker") return ui.value || "#10b981";
+    if (type === "date") return ui.value || "";
+    if (type === "json") return ui.value || "{}";
+    if (canonicalDynamicType(type)) return ui.value ?? "";
+    return ui.value ?? "";
+  }
+  function buildDefaults(items) {
+    const values = {};
+    for (const item of items) {
+      if (!item.id) continue;
+      values[normalizeId2(item.id)] = defaultValue(item);
+    }
+    return values;
+  }
+  function requestPayload(items, values) {
+    const payload = {};
+    for (const item of items) {
+      if (!item.id) continue;
+      const key = normalizeId2(item.id);
+      const value = values[key];
+      if (Array.isArray(item.id)) {
+        item.id.forEach((id, index) => {
+          payload[id] = Array.isArray(value) ? value[index] : value;
+        });
+      } else {
+        payload[item.id] = value;
+      }
+    }
+    return payload;
+  }
+  function validateWorkflowMappings(config, workflow) {
+    for (const item of flattenInputs(config.input || {})) {
+      if (!item.id) continue;
+      const ids = Array.isArray(item.id) ? item.id : [item.id];
+      ids.forEach((id) => resolveWorkflowInput(workflow, id));
+    }
+    for (const item of Object.values(config.output || {})) {
+      const nodeId = String(item.id || "");
+      if (!nodeId || !workflow[nodeId]) throw new Error(`Workflow output node not found: ${nodeId}`);
+    }
+  }
+  async function normalizeValues(values) {
+    const normalized = {};
+    let fileIndex = 0;
+    for (const [key, value] of Object.entries(values || {})) {
+      if (value === "random_seed") {
+        normalized[key] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+      } else if (typeof value === "string" && value.startsWith("data:")) {
+        normalized[key] = { kind: "upload", index: fileIndex++, ...parseDataUrl(value) };
+      } else {
+        normalized[key] = value;
+      }
+    }
+    return normalized;
+  }
+  async function loadBuiltInTemplate(id) {
+    const yamlRaw = fs.readFileSync(`plugin:templates/${id}/app_build.yaml`, "utf8");
+    const workflow = JSON.parse(fs.readFileSync(`plugin:templates/${id}/api.json`, "utf8"));
+    const config = browser_default.parse(yamlRaw);
+    return { id, name: config?.app?.name || id, source: "bundled", config, workflow };
+  }
+  async function readFolderText(folder, name) {
+    const file = await folder.getEntry(name);
+    return file.read();
+  }
+  async function loadFolderTemplate(folder) {
+    const yamlRaw = await readFolderText(folder, "app_build.yaml");
+    const apiRaw = await readFolderText(folder, "api.json");
+    const config = browser_default.parse(yamlRaw);
+    return {
+      id: `folder:${folder.name}`,
+      name: `${config?.app?.name || folder.name} (folder)`,
+      source: "folder",
+      folder,
+      config,
+      workflow: JSON.parse(apiRaw)
+    };
+  }
+  async function loadTemplates() {
+    const templates = [];
+    const errors = [];
+    for (const id of BUILTIN_TEMPLATES) {
+      try {
+        templates.push(await loadBuiltInTemplate(id));
+      } catch (error) {
+        errors.push(`${id}: ${error.message}`);
+        console.warn(`Failed to load bundled template ${id}`, error);
+      }
+    }
+    try {
+      const token = localStorage.getItem(TEMPLATE_FOLDER_KEY);
+      if (token) {
+        const folder = await storage3.localFileSystem.getEntryForPersistentToken(token);
+        templates.push(await loadFolderTemplate(folder));
+      }
+    } catch (error) {
+      console.warn("Stored template folder is no longer available", error);
+    }
+    state.templates = templates;
+    els.templateSelect.innerHTML = "";
+    for (const template of templates) {
+      const option = document.createElement("option");
+      option.value = template.id;
+      option.textContent = template.name;
+      els.templateSelect.append(option);
+    }
+    if (templates.length) {
+      await selectTemplate(templates[0].id);
+    } else {
+      setStatus(errors.length ? `No templates found: ${errors[0]}` : "No templates found");
+    }
+  }
+  async function chooseTemplateFolder() {
+    try {
+      const folder = await storage3.localFileSystem.getFolder();
+      const token = await storage3.localFileSystem.createPersistentToken(folder);
+      localStorage.setItem(TEMPLATE_FOLDER_KEY, token);
+      const template = await loadFolderTemplate(folder);
+      state.templates = state.templates.filter((item) => item.source !== "folder").concat(template);
+      await refreshTemplateSelect(template.id);
+      setStatus(`Loaded ${template.name}`);
+    } catch (error) {
+      setStatus(`Cannot load folder: ${error.message}`);
+    }
+  }
+  async function refreshTemplateSelect(selectedId) {
+    els.templateSelect.innerHTML = "";
+    for (const template of state.templates) {
+      const option = document.createElement("option");
+      option.value = template.id;
+      option.textContent = template.name;
+      els.templateSelect.append(option);
+    }
+    await selectTemplate(selectedId || state.templates[0]?.id);
+  }
+  async function selectTemplate(id) {
+    const template = state.templates.find((item) => item.id === id);
+    if (!template) return;
+    try {
+      state.selectedTemplate = template;
+      state.config = cloneData(template.config);
+      state.workflow = cloneData(template.workflow);
+      validateWorkflowMappings(state.config, state.workflow);
+      const inputs = flattenInputs(state.config.input || {});
+      state.values = buildDefaults(inputs);
+      state.imageValues = {};
+      state.imageSources = {};
+      state.imagePreviews = {};
+      els.templateSelect.value = id;
+      els.workflowTitle.textContent = state.config?.app?.name || template.name;
+      renderDynamicForm(inputs);
+      setStatus(`Loaded workflow ${template.name}`);
+      fetchServerChoices().then(() => updateServerSelects()).catch(() => {
+      });
+    } catch (error) {
+      state.selectedTemplate = null;
+      state.config = null;
+      state.workflow = null;
+      state.values = {};
+      state.imageValues = {};
+      state.imageSources = {};
+      state.imagePreviews = {};
+      els.dynamicForm.innerHTML = "";
+      els.workflowTitle.textContent = "Inputs";
+      setStatus(`Workflow load failed: ${error.message}`);
+    }
+  }
+  function selectedTemplateId() {
+    const selected = els.templateSelect.options?.[els.templateSelect.selectedIndex];
+    return selected?.value || els.templateSelect.value;
+  }
+  async function testConnection() {
+    try {
+      const raw = els.serverUrlInput.value.trim() || DEFAULT_SERVER;
+      const target = normalizeComfyTarget(raw);
+      state.settings.serverUrl = target.label;
+      els.serverUrlInput.value = target.label;
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+      setStatus("Connecting...");
+      const response = await fetch(`${target.httpBase}/system_stats`, {
+        headers: target.headers,
+        credentials: "omit"
+      });
+      if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+      setStatus("\u2713 Saved \u2014 ComfyUI connected");
+      fetchServerChoices().then(() => updateServerSelects()).catch(() => {
+      });
+    } catch (error) {
+      const msg = error.message || String(error);
+      if (/failed to fetch|network|blocked|insecure/i.test(msg)) {
+        setStatus(`Connection failed: plugin may be blocking HTTP \u2014 reload plugin after saving`);
+      } else {
+        setStatus(`Connection failed: ${msg}`);
+      }
+    }
+  }
   async function runWorkflow() {
     setStatus("Starting workflow...");
     if (state.running) {
@@ -7830,14 +7905,14 @@ ${end.comment}` : end.comment;
       if (selectionInfo) {
         const imageInput = inputs.find((item) => item.id && isImageInputItem(item));
         if (imageInput) {
-          const imageKey = normalizeId(imageInput.id);
+          const imageKey = normalizeId2(imageInput.id);
           const requestKey = Array.isArray(imageInput.id) ? imageInput.id[0] : imageInput.id;
           request[requestKey] = await prepareSelectionLayerInputDataUrl(selectionInfo, imageKey);
         }
       } else {
         const imageInputs = inputs.filter((item) => item.id && isImageInputItem(item));
         const missingImageInputs = imageInputs.filter((item) => {
-          const key = normalizeId(item.id);
+          const key = normalizeId2(item.id);
           const val = state.values[key];
           return !val || typeof val === "string" && !val.startsWith("data:");
         });
@@ -7845,7 +7920,7 @@ ${end.comment}` : end.comment;
           setStatus("Kh\xF4ng c\xF3 \u1EA3nh input, t\u1EF1 \u0111\u1ED9ng d\xF9ng document hi\u1EC7n t\u1EA1i...");
           const docDataUrl = await exportActiveDocumentDataUrl();
           for (const item of missingImageInputs) {
-            const key = normalizeId(item.id);
+            const key = normalizeId2(item.id);
             const requestKey = Array.isArray(item.id) ? item.id[0] : item.id;
             setImageInputValue(key, docDataUrl, "document");
             request[requestKey] = docDataUrl;
@@ -7857,21 +7932,18 @@ ${end.comment}` : end.comment;
       for (const [id, value] of Object.entries(normalized)) {
         await setWorkflowValue(workflow, id, value, target, state.abortController.signal);
       }
-      const clientId = createId();
       setStatus("Queueing prompt...");
-      const queued = await queuePrompt(target, workflow, clientId, state.abortController.signal);
+      const queued = await queuePrompt(target, workflow, state.abortController.signal);
       state.activePromptId = queued.prompt_id;
       setStatus(`Queued prompt ${queued.prompt_id}`);
-      await waitForPromptCompletion(target, queued.prompt_id, clientId, state.abortController.signal);
+      await waitForPromptCompletion(target, queued.prompt_id, state.abortController.signal);
       setStatus("Loading output history...");
       const historyRoot = await getHistory(target, queued.prompt_id, state.abortController.signal);
       const outputs = collectOutputs(state.config, historyRoot[queued.prompt_id], target);
-      outputs.forEach((output) => {
-        output.fitBounds = selectionInfo;
-      });
       let importedCount = 0;
       for (const output of outputs) {
-        await importOutputAsLayer(output, state.abortController.signal, selectionInfo);
+        const { buffer } = await fetchOutputBytes(output, state.abortController.signal);
+        await importBufferAsLayer(buffer, output.filename, selectionInfo);
         importedCount += 1;
       }
       setProgress();
