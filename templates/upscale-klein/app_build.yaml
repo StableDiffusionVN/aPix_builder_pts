@@ -1,6 +1,12 @@
 app:
   name: SDVN Upscale Klein
 input:
+  checkpoint:
+    id: 267-Ckpt_name
+    ui:
+      type: checkpoints
+      label: Checkpoint
+      value: Flux2-klein-9b.safetensors
   lora_upscale:
     id: 268-lora_name
     ui:
@@ -17,6 +23,30 @@ input:
     ui:
       type: image
       label: Ảnh upscale
+  custom_prompt:
+    id: 279-value
+    ui:
+      type: string
+      label: Custom Prompt
+  upscale_size:
+    id: 273-Menu
+    ui:
+      type: menu
+      label: Upscale size
+      choices:
+        - "1024"
+        - "1536"
+        - "1920"
+        - "2048"
+        - "3800"
+        - "4000"
+        - "5600"
+        - "6000"
+        - "7400"
+        - "8000"
+        - "9200"
+        - "10000"
+      value: "2048"
   color_match:
     id: 263-method
     ui:

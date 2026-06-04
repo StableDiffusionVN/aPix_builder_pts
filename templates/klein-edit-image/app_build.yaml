@@ -6,6 +6,7 @@ input:
     ui:
       type: checkpoints
       label: Checkpoint Klein
+      value: Flux2-klein-9b.safetensors
   note:
     ui:
       type: note

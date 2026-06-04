@@ -11,7 +11,8 @@
   "requiredPermissions": {
     "localFileSystem": "fullAccess",
     "network": {
-      "domains": "all"
+      "domains": "all",
+      "allowInsecureRequests": true
     }
   },
   "entrypoints": [

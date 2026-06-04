@@ -14,6 +14,7 @@ html,
 body {
   width: 100%;
   height: 100%;
+  overflow: hidden;
 }
 
 * {
@@ -25,18 +26,20 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  overflow-y: scroll;
-  overflow-x: hidden;
 }
 
 #app {
-  min-height: 100%;
+  height: 100%;
   min-width: 300px;
-  padding: 10px 12px 18px;
+  display: flex;
+  flex-direction: column;
 }
 
 .scrollArea {
-  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 12px 0;
 }
 
 .topbar,
@@ -87,10 +90,7 @@ h2 {
 }
 
 .stickyFooter {
-  position: sticky;
-  bottom: 0;
-  z-index: 20;
-  margin: 0 -12px -18px;
+  flex-shrink: 0;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--line);
   border-bottom: 0;
@@ -111,6 +111,108 @@ h2 {
   display: block;
   color: var(--muted);
   font-size: 11px;
+  text-align: left;
+}
+
+.inputWithBtn {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  align-items: center;
+}
+
+.inputWithBtn input {
+  flex: 1;
+}
+
+.inputWithBtn button {
+  flex-shrink: 0;
+  width: auto;
+}
+
+.field--slider {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.field--slider > span {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 12px;
+  padding-right: 10px;
+}
+
+.field--slider > div {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field--slider input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.field--slider > div > span {
+  min-width: 36px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.seedField {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.seedField input {
+  flex: 1;
+}
+
+.seedRandom {
+  flex-shrink: 0;
+  width: 30px;
+  min-width: 30px;
+  font-size: 14px;
+  padding: 0;
+}
+
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.field--inline > span {
+  flex: 1;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.field--inline > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.field--inline input[type="number"],
+.field--inline input[type="range"] {
+  width: 110px;
+  text-align: right;
+}
+
+.field--inline > div > span {
+  min-width: 36px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 input,
@@ -200,12 +302,13 @@ button:disabled {
 
 .imageActions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 6px;
 }
 
 .imageActions button {
-  flex: 1 1 110px;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .preview {
@@ -227,33 +330,70 @@ progress {
   margin: 8px 0;
 }
 
-.outputList {
-  display: grid;
-  gap: 10px;
-}
-
-.outputItem {
-  display: grid;
-  gap: 8px;
-}
-
-.outputMeta {
-  color: var(--muted);
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-
-.outputItem img {
-  width: 100%;
-  max-height: 220px;
-  object-fit: contain;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #141414;
-}
-
 .inlineCheckbox {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.radioGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.radioItem {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.radioItem input[type="radio"] {
+  width: auto;
+  height: auto;
+  margin: 0;
+}
+
+.booleanToggle {
+  display: flex;
+  gap: 0;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.field--inline .booleanToggle {
+  margin-top: 0;
+  gap: 0;
+}
+
+.field--inline .inlineCheckbox {
+  gap: 0;
+  justify-content: flex-end;
+}
+
+.booleanToggle button {
+  flex: 1;
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.booleanToggle button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.booleanToggle button:last-child {
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+.booleanToggle button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06111f;
+  font-weight: 700;
 }

@@ -20,13 +20,9 @@
           <div class="sectionHeader">
             <h2>Setting</h2>
           </div>
-          <label class="field">
-            <span>ComfyUI server URL</span>
+          <div class="inputWithBtn">
             <input id="serverUrlInput" type="text" placeholder="http://127.0.0.1:8188" />
-          </label>
-          <div class="row">
-            <button id="saveSettingsBtn" type="button">Save</button>
-            <button id="testConnectionBtn" class="secondary" type="button">Test</button>
+            <button id="testConnectionBtn" class="secondary" type="button">Check</button>
           </div>
         </section>
 
@@ -48,12 +44,6 @@
           <form id="dynamicForm"></form>
         </section>
 
-        <section class="section">
-          <div class="sectionHeader">
-            <h2>Output</h2>
-          </div>
-          <div id="outputList" class="outputList"></div>
-        </section>
       </div>
 
       <section class="section stickyFooter">

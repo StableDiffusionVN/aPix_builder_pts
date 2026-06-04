@@ -3,7 +3,7 @@ import YAML from "yaml";
 const photoshop = require("photoshop");
 const { app, core, imaging } = photoshop;
 const { batchPlay } = photoshop.action;
-const { storage, shell } = require("uxp");
+const { storage } = require("uxp");
 const fs = require("fs");
 
 const BUILTIN_TEMPLATES = [
@@ -27,6 +27,7 @@ const state = {
   imageValues: {},
   imageSources: {},
   imagePreviews: {},
+  serverChoices: {},
   abortController: null,
   activeWebSocket: null,
   activePromptId: null,
@@ -122,11 +123,24 @@ function saveSettings() {
   setStatus("Saved settings");
 }
 
+function isLocalHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host.endsWith(".local")) return true;
+  if (/^127(?:\.\d{1,3}){3}$/.test(host)) return true;
+  if (/^10(?:\.\d{1,3}){3}$/.test(host)) return true;
+  if (/^192\.168(?:\.\d{1,3}){2}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}$/.test(host)) return true;
+  return false;
+}
+
 function normalizeComfyTarget(rawAddress) {
   if (!rawAddress) throw new Error("Missing ComfyUI server URL");
   let value = String(rawAddress).trim().replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
-  const url = new URL(value);
+  let url = new URL(value);
+  if (url.protocol === "http:" && !isLocalHost(url.hostname)) {
+    url.protocol = "https:";
+  }
   const wsProtocol = url.protocol === "https:" ? "wss:" : "ws:";
   const username = decodeURIComponent(url.username || "");
   const password = decodeURIComponent(url.password || "");
@@ -162,10 +176,14 @@ function defaultValue(item) {
   const ui = item.ui || {};
   const type = String(ui.type || "").toLowerCase();
   if (type === "seed") return "random_seed";
-  if (type === "checkbox" || type === "boolean") return Boolean(ui.value);
+  if (type === "checkbox") return Boolean(ui.value);
+  if (type === "boolean") return ui.value === true || ui.value === "true" ? true : false;
   if (type === "number" || type === "int" || type === "float" || type === "slider") return ui.value ?? ui.minimum ?? 0;
   if (type === "dropdown" || type === "menu" || type === "radio") return ui.value ?? ui.choices?.[0] ?? "";
-  if (type === "json") return "{}";
+  if (type === "colorpicker") return ui.value || "#10b981";
+  if (type === "date") return ui.value || "";
+  if (type === "json") return ui.value || "{}";
+  if (canonicalDynamicType(type)) return ui.value ?? "";
   return ui.value ?? "";
 }
 
@@ -746,17 +764,6 @@ function collectOutputs(config, history, target) {
   return outputs;
 }
 
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode.apply(null, chunk);
-  }
-  return btoa(binary);
-}
-
 async function fetchOutputBytes(output, signal) {
   const response = await fetch(output.url, {
     headers: output.headers || {},
@@ -769,11 +776,6 @@ async function fetchOutputBytes(output, signal) {
     buffer: await response.arrayBuffer(),
     mimeType: response.headers.get("content-type") || "image/png"
   };
-}
-
-async function outputToDataUrl(output, signal) {
-  const { buffer, mimeType } = await fetchOutputBytes(output, signal);
-  return `data:${mimeType};base64,${arrayBufferToBase64(buffer)}`;
 }
 
 function layerBounds(layer) {
@@ -871,13 +873,26 @@ async function importOutputAsLayer(output, signal, fitBounds = null) {
 
 async function testConnection() {
   try {
-    saveSettings();
-    const target = normalizeComfyTarget(state.settings.serverUrl);
-    const response = await fetch(`${target.httpBase}/system_stats`, { headers: target.headers });
+    const raw = els.serverUrlInput.value.trim() || DEFAULT_SERVER;
+    const target = normalizeComfyTarget(raw);
+    state.settings.serverUrl = target.label;
+    els.serverUrlInput.value = target.label;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+    setStatus("Connecting...");
+    const response = await fetch(`${target.httpBase}/system_stats`, {
+      headers: target.headers,
+      credentials: "omit"
+    });
     if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
-    setStatus("ComfyUI connection is OK");
+    setStatus("✓ Saved — ComfyUI connected");
+    fetchServerChoices().then(() => updateServerSelects()).catch(() => {});
   } catch (error) {
-    setStatus(`Connection failed: ${error.message}`);
+    const msg = error.message || String(error);
+    if (/failed to fetch|network|blocked|insecure/i.test(msg)) {
+      setStatus(`Connection failed: plugin may be blocking HTTP — reload plugin after saving`);
+    } else {
+      setStatus(`Connection failed: ${msg}`);
+    }
   }
 }
 
@@ -984,6 +999,7 @@ async function selectTemplate(id) {
     els.workflowTitle.textContent = state.config?.app?.name || template.name;
     renderDynamicForm(inputs);
     setStatus(`Loaded workflow ${template.name}`);
+    fetchServerChoices().then(() => updateServerSelects()).catch(() => {});
   } catch (error) {
     state.selectedTemplate = null;
     state.config = null;
@@ -1003,6 +1019,124 @@ function selectedTemplateId() {
   return selected?.value || els.templateSelect.value;
 }
 
+function markdownToHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
+      `<a href="#" data-href="${url}" style="color:var(--accent)">${label}</a>`)
+    .replace(/\n/g, "<br>");
+}
+
+function renderSeedField(key) {
+  const wrap = document.createElement("div");
+  wrap.className = "seedField";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "random_seed";
+  input.value = state.values[key] === "random_seed" ? "" : (state.values[key] ?? "");
+  input.addEventListener("input", () => {
+    const v = input.value.trim();
+    state.values[key] = v === "" ? "random_seed" : Number.isFinite(Number(v)) ? Number(v) : "random_seed";
+  });
+  const randBtn = document.createElement("button");
+  randBtn.type = "button";
+  randBtn.textContent = "🎲";
+  randBtn.title = "Use random seed";
+  randBtn.className = "iconButton seedRandom";
+  randBtn.addEventListener("click", () => {
+    input.value = "";
+    state.values[key] = "random_seed";
+  });
+  wrap.append(input, randBtn);
+  return wrap;
+}
+
+// Registry: canonical type → { nodeClass, field }
+const DYNAMIC_TYPE_REGISTRY = {
+  checkpoints:    { aliases: ["checkpoint", "ckpt"],                        node: "CheckpointLoaderSimple", field: "ckpt_name" },
+  loras:          { aliases: ["lora"],                                       node: "LoraLoader",             field: "lora_name" },
+  vae:            { aliases: ["vaes"],                                       node: "VAELoader",              field: "vae_name" },
+  controlnets:    { aliases: ["controlnet", "control_net"],                  node: "ControlNetLoader",       field: "control_net_name" },
+  upscale_models: { aliases: ["upscale_model", "upscalers"],                 node: "UpscaleModelLoader",     field: "model_name" },
+  samplers:       { aliases: ["sampler"],                                    node: "KSampler",               field: "sampler_name" },
+  schedulers:     { aliases: ["scheduler"],                                  node: "KSampler",               field: "scheduler" },
+  unet:           { aliases: ["unets", "diffusion_models", "diffusion_model"], node: "UNETLoader",           field: "unet_name" },
+  style_models:   { aliases: ["style_model"],                                node: "StyleModelLoader",       field: "style_model_name" },
+  embeddings:     { aliases: ["embedding"],                                  node: "CLIPTextEncode",         field: "text" },
+  clip:           { aliases: ["clips", "text_encoders", "text_encoder"],     node: "CLIPLoader",             field: "clip_name" },
+  clip_vision:    { aliases: ["clipvision", "clip_visions"],                 node: "CLIPVisionLoader",       field: "clip_name" }
+};
+
+const DYNAMIC_TYPE_ALIAS_MAP = (() => {
+  const map = {};
+  for (const [canonical, cfg] of Object.entries(DYNAMIC_TYPE_REGISTRY)) {
+    map[canonical] = canonical;
+    for (const alias of cfg.aliases) map[alias] = canonical;
+  }
+  return map;
+})();
+
+function canonicalDynamicType(type) {
+  return DYNAMIC_TYPE_ALIAS_MAP[String(type || "").toLowerCase()] || "";
+}
+
+async function fetchServerChoices() {
+  if (!state.settings.serverUrl) return;
+  try {
+    const target = normalizeComfyTarget(state.settings.serverUrl);
+    // Deduplicate node classes (e.g. samplers+schedulers both use KSampler)
+    const nodeMap = {};
+    for (const [canonical, cfg] of Object.entries(DYNAMIC_TYPE_REGISTRY)) {
+      if (!nodeMap[cfg.node]) nodeMap[cfg.node] = [];
+      nodeMap[cfg.node].push({ canonical, field: cfg.field });
+    }
+    const results = await Promise.allSettled(
+      Object.entries(nodeMap).map(([nodeClass, targets]) =>
+        fetch(`${target.httpBase}/object_info/${nodeClass}`, { headers: target.headers })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => ({ nodeClass, targets, data }))
+      )
+    );
+    for (const result of results) {
+      if (result.status !== "fulfilled" || !result.value?.data) continue;
+      const { nodeClass, targets, data } = result.value;
+      const nodeInfo = data[nodeClass];
+      for (const { canonical, field } of targets) {
+        const choices =
+          nodeInfo?.input?.required?.[field]?.[0] ||
+          nodeInfo?.input?.optional?.[field]?.[0];
+        if (Array.isArray(choices) && choices.length) {
+          state.serverChoices[canonical] = choices;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("fetchServerChoices failed", error);
+  }
+}
+
+function updateServerSelects() {
+  const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
+  for (const select of selects) {
+    const serverType = select.dataset.serverType;
+    const choices = state.serverChoices[serverType];
+    if (!choices?.length) continue;
+    const current = select.value;
+    select.innerHTML = "";
+    for (const choice of choices) {
+      const opt = document.createElement("option");
+      opt.value = choice;
+      opt.textContent = choice;
+      select.append(opt);
+    }
+    select.value = choices.includes(current) ? current : choices[0];
+    const key = select.dataset.stateKey;
+    if (key) state.values[key] = select.value;
+  }
+}
+
 function renderDynamicForm(items) {
   els.dynamicForm.innerHTML = "";
   for (const item of items) {
@@ -1011,8 +1145,21 @@ function renderDynamicForm(items) {
     if (type === "note" || type === "markdown") {
       const note = document.createElement("div");
       note.className = "note";
-      note.textContent = ui.markdown || ui.value || "";
+      note.innerHTML = markdownToHtml(ui.markdown || ui.value || "");
+      note.querySelectorAll("a[data-href]").forEach(a => {
+        a.addEventListener("click", e => {
+          e.preventDefault();
+          try { require("uxp").shell.openExternal(a.dataset.href); } catch {}
+        });
+      });
       els.dynamicForm.append(note);
+      continue;
+    }
+    if (type === "html") {
+      const block = document.createElement("div");
+      block.className = "note";
+      block.innerHTML = ui.value || "";
+      els.dynamicForm.append(block);
       continue;
     }
     if (!item.id) continue;
@@ -1023,6 +1170,9 @@ function renderDynamicForm(items) {
     label.textContent = ui.label || item.key;
     field.append(label);
 
+    const isSlider = type === "slider" || ui.display === "slider";
+    const isDynamic = Boolean(canonicalDynamicType(type));
+
     if (type === "image" || type === "image_mask" || type === "file") {
       field.append(renderImageField(key));
     } else if (type === "text") {
@@ -1030,15 +1180,68 @@ function renderDynamicForm(items) {
       textarea.value = state.values[key] ?? "";
       textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
       field.append(textarea);
+    } else if (type === "string") {
+      const multiline = ui.display === "multiline" || ui.multiline === true || Number(ui.lines || 1) > 1;
+      if (multiline) {
+        const textarea = document.createElement("textarea");
+        textarea.rows = ui.lines || 3;
+        textarea.placeholder = ui.placeholder || "";
+        textarea.value = state.values[key] ?? "";
+        textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
+        field.append(textarea);
+      } else {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = ui.placeholder || "";
+        input.value = state.values[key] ?? "";
+        input.addEventListener("input", () => { state.values[key] = input.value; });
+        field.append(input);
+      }
     } else if (["int", "float", "number", "slider"].includes(type)) {
+      if (isSlider) {
+        field.classList.add("field--slider");
+      } else {
+        field.classList.add("field--inline");
+      }
       field.append(renderNumberField(key, ui, type));
-    } else if (["dropdown", "menu", "radio", "checkpoints", "checkpoint", "loras", "lora"].includes(type)) {
-      field.append(renderSelectField(key, ui));
-    } else if (["checkbox", "boolean"].includes(type)) {
+    } else if (type === "seed") {
+      field.classList.add("field--inline");
+      field.append(renderSeedField(key));
+    } else if (type === "radio") {
+      field.append(renderRadioField(key, ui));
+    } else if (["dropdown", "menu"].includes(type) || isDynamic) {
+      field.append(renderSelectField(key, ui, type));
+    } else if (type === "boolean") {
+      field.classList.add("field--inline");
+      field.append(renderBooleanField(key));
+    } else if (type === "checkbox") {
+      field.classList.add("field--inline");
       field.append(renderCheckboxField(key));
+    } else if (type === "colorpicker") {
+      const input = document.createElement("input");
+      input.type = "color";
+      input.value = state.values[key] || "#10b981";
+      input.addEventListener("input", () => { state.values[key] = input.value; });
+      field.classList.add("field--inline");
+      field.append(input);
+    } else if (type === "date") {
+      const input = document.createElement("input");
+      input.type = "date";
+      input.value = state.values[key] || "";
+      input.addEventListener("input", () => { state.values[key] = input.value; });
+      field.classList.add("field--inline");
+      field.append(input);
+    } else if (type === "json") {
+      const textarea = document.createElement("textarea");
+      textarea.rows = 5;
+      textarea.value = state.values[key] ?? "{}";
+      textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
+      field.append(textarea);
     } else {
+      // fallback: single-line text
       const input = document.createElement("input");
       input.type = "text";
+      input.placeholder = ui.placeholder || "";
       input.value = state.values[key] ?? "";
       input.addEventListener("input", () => { state.values[key] = input.value; });
       field.append(input);
@@ -1054,13 +1257,13 @@ function renderImageField(key) {
   actions.className = "imageActions";
   const fromDoc = document.createElement("button");
   fromDoc.type = "button";
-  fromDoc.textContent = "Use Document";
+  fromDoc.textContent = "Document";
   const fromLayer = document.createElement("button");
   fromLayer.type = "button";
-  fromLayer.textContent = "Use Layer";
+  fromLayer.textContent = "Layer";
   const choose = document.createElement("button");
   choose.type = "button";
-  choose.textContent = "Choose File";
+  choose.textContent = "File";
   const preview = document.createElement("img");
   preview.className = "preview";
   preview.hidden = true;
@@ -1129,9 +1332,19 @@ function renderNumberField(key, ui, type) {
   return wrap;
 }
 
-function renderSelectField(key, ui) {
+function renderSelectField(key, ui, type) {
   const select = document.createElement("select");
-  const choices = ui.choices?.length ? ui.choices : [ui.value || ""].filter(Boolean);
+  const serverType = canonicalDynamicType(type);
+  const serverChoices = serverType ? state.serverChoices[serverType] : null;
+  const choices = serverChoices?.length ? serverChoices
+    : ui.choices?.length ? ui.choices
+    : [ui.value || ""].filter(Boolean);
+  if (serverType && !choices.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "Chưa kết nối server...";
+    select.append(opt);
+  }
   for (const choice of choices) {
     const option = document.createElement("option");
     option.value = choice;
@@ -1140,7 +1353,53 @@ function renderSelectField(key, ui) {
   }
   select.value = state.values[key] ?? choices[0] ?? "";
   select.addEventListener("change", () => { state.values[key] = select.value; });
+  if (serverType) {
+    select.dataset.serverType = serverType;
+    select.dataset.stateKey = key;
+  }
   return select;
+}
+
+function renderRadioField(key, ui) {
+  const wrap = document.createElement("div");
+  wrap.className = "radioGroup";
+  const choices = ui.choices || [];
+  for (const choice of choices) {
+    const radioLabel = document.createElement("label");
+    radioLabel.className = "radioItem";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = `radio-${key}`;
+    input.value = choice;
+    input.checked = (state.values[key] ?? choices[0]) === choice;
+    input.addEventListener("change", () => { if (input.checked) state.values[key] = choice; });
+    const span = document.createElement("span");
+    span.textContent = choice;
+    radioLabel.append(input, span);
+    wrap.append(radioLabel);
+  }
+  return wrap;
+}
+
+function renderBooleanField(key) {
+  const wrap = document.createElement("div");
+  wrap.className = "booleanToggle";
+  const trueBtn = document.createElement("button");
+  trueBtn.type = "button";
+  trueBtn.textContent = "True";
+  const falseBtn = document.createElement("button");
+  falseBtn.type = "button";
+  falseBtn.textContent = "False";
+  const update = () => {
+    const val = state.values[key];
+    trueBtn.classList.toggle("active", val === true);
+    falseBtn.classList.toggle("active", val === false);
+  };
+  trueBtn.addEventListener("click", () => { state.values[key] = true; update(); });
+  falseBtn.addEventListener("click", () => { state.values[key] = false; update(); });
+  update();
+  wrap.append(trueBtn, falseBtn);
+  return wrap;
 }
 
 function renderCheckboxField(key) {
@@ -1172,7 +1431,6 @@ async function runWorkflow() {
   saveSettings();
   els.runBtn.disabled = true;
   els.cancelBtn.disabled = false;
-  els.outputList.innerHTML = "";
   setProgress();
   state.abortController = new AbortController();
 
@@ -1190,6 +1448,24 @@ async function runWorkflow() {
         const requestKey = Array.isArray(imageInput.id) ? imageInput.id[0] : imageInput.id;
         request[requestKey] = await prepareSelectionLayerInputDataUrl(selectionInfo, imageKey);
       }
+    } else {
+      // Không có vùng chọn: kiểm tra các image input chưa được gán giá trị
+      const imageInputs = inputs.filter(item => item.id && isImageInputItem(item));
+      const missingImageInputs = imageInputs.filter(item => {
+        const key = normalizeId(item.id);
+        const val = state.values[key];
+        return !val || (typeof val === "string" && !val.startsWith("data:"));
+      });
+      if (missingImageInputs.length > 0) {
+        setStatus("Không có ảnh input, tự động dùng document hiện tại...");
+        const docDataUrl = await exportActiveDocumentDataUrl();
+        for (const item of missingImageInputs) {
+          const key = normalizeId(item.id);
+          const requestKey = Array.isArray(item.id) ? item.id[0] : item.id;
+          setImageInputValue(key, docDataUrl, "document");
+          request[requestKey] = docDataUrl;
+        }
+      }
     }
     const normalized = await normalizeValues(request);
     setStatus("Patching workflow...");
@@ -1206,7 +1482,6 @@ async function runWorkflow() {
     const historyRoot = await getHistory(target, queued.prompt_id, state.abortController.signal);
     const outputs = collectOutputs(state.config, historyRoot[queued.prompt_id], target);
     outputs.forEach(output => { output.fitBounds = selectionInfo; });
-    await renderOutputs(outputs, state.abortController.signal);
     let importedCount = 0;
     for (const output of outputs) {
       await importOutputAsLayer(output, state.abortController.signal, selectionInfo);
@@ -1224,56 +1499,6 @@ async function runWorkflow() {
     state.abortController = null;
     state.activePromptId = null;
     state.running = false;
-  }
-}
-
-async function renderOutputs(outputs, signal) {
-  els.outputList.innerHTML = "";
-  if (!outputs.length) {
-    const empty = document.createElement("div");
-    empty.className = "outputMeta";
-    empty.textContent = "No output images returned by ComfyUI history.";
-    els.outputList.appendChild(empty);
-    return;
-  }
-  for (const output of outputs) {
-    const item = document.createElement("div");
-    item.className = "outputItem";
-    const meta = document.createElement("div");
-    meta.className = "outputMeta";
-    meta.textContent = `Loading Node ${output.nodeId} - ${output.filename}`;
-    const img = document.createElement("img");
-    img.alt = output.filename;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = `Open ${output.filename}`;
-    button.addEventListener("click", () => {
-      shell?.openExternal?.(output.url);
-    });
-    const importButton = document.createElement("button");
-    importButton.type = "button";
-    importButton.textContent = "Import Layer";
-    importButton.addEventListener("click", async () => {
-      try {
-        meta.textContent = `Importing ${output.filename}...`;
-        await importOutputAsLayer(output, state.abortController?.signal, output.fitBounds || null);
-        meta.textContent = `Imported ${output.filename}`;
-      } catch (error) {
-        meta.textContent = `Import failed ${output.filename}: ${error.message}`;
-      }
-    });
-    item.appendChild(meta);
-    item.appendChild(img);
-    item.appendChild(importButton);
-    item.appendChild(button);
-    els.outputList.appendChild(item);
-    try {
-      img.src = await outputToDataUrl(output, signal);
-      meta.textContent = `Node ${output.nodeId} - ${output.filename}`;
-    } catch (error) {
-      img.hidden = true;
-      meta.textContent = `Cannot preview ${output.filename}: ${error.message}`;
-    }
   }
 }
 
@@ -1352,8 +1577,6 @@ function bindEvents() {
   safeBind(window, "click", delegatedRunHandler, "window run click", true);
   safeBind(window, "pointerup", delegatedRunHandler, "window run pointerup", true);
 
-  safeBind(els.serverUrlInput, "change", saveSettings, "settings change");
-  safeBind(els.saveSettingsBtn, "click", saveSettings, "save click");
   safeBind(els.testConnectionBtn, "click", testConnection, "test click");
   safeBind(els.refreshTemplatesBtn, "click", loadTemplates, "refresh click");
   safeBind(els.chooseTemplateFolderBtn, "click", chooseTemplateFolder, "folder click");
@@ -1365,7 +1588,6 @@ function bindEvents() {
 function initElements() {
   [
     "serverUrlInput",
-    "saveSettingsBtn",
     "testConnectionBtn",
     "refreshTemplatesBtn",
     "chooseTemplateFolderBtn",
@@ -1375,8 +1597,7 @@ function initElements() {
     "statusText",
     "progressBar",
     "runBtn",
-    "cancelBtn",
-    "outputList"
+    "cancelBtn"
   ].forEach(id => { els[id] = byId(id); });
 }
 
