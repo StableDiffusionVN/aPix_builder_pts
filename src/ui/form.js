@@ -1,6 +1,7 @@
 import { state, els, setStatus, setImageInputValue, normalizeId } from "../state.js";
 import { canonicalDynamicType } from "../services/comfy.js";
 import { exportActiveDocumentDataUrl, exportActiveLayerDataUrl } from "../services/photoshop.js";
+import { readUxFileAsDataUrl } from "../utils/files.js";
 
 const { storage } = require("uxp");
 
@@ -12,16 +13,6 @@ function markdownToHtml(text) {
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
       `<a href="#" data-href="${url}" style="color:var(--accent)">${label}</a>`)
     .replace(/\n/g, "<br>");
-}
-
-async function readUxFileAsDataUrl(file) {
-  const bytes = await file.read({ format: storage.formats.binary });
-  const ext = String(file.name || "").toLowerCase();
-  const mime = ext.endsWith(".jpg") || ext.endsWith(".jpeg") ? "image/jpeg" : ext.endsWith(".webp") ? "image/webp" : "image/png";
-  let binary = "";
-  const buffer = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer || bytes);
-  for (let i = 0; i < buffer.length; i += 1) binary += String.fromCharCode(buffer[i]);
-  return `data:${mime};base64,${btoa(binary)}`;
 }
 
 export function updateServerSelects() {
@@ -81,7 +72,7 @@ export function renderDynamicForm(items) {
     const isDynamic = Boolean(canonicalDynamicType(type));
 
     if (type === "image" || type === "image_mask" || type === "file") {
-      field.append(renderImageField(key));
+      field.append(renderImageField(key, type === "image_mask"));
     } else if (type === "text") {
       const textarea = document.createElement("textarea");
       textarea.value = state.values[key] ?? "";
@@ -157,9 +148,15 @@ export function renderDynamicForm(items) {
   }
 }
 
-function renderImageField(key) {
+function renderImageField(key, isMask = false) {
   const wrap = document.createElement("div");
   wrap.className = "imageField";
+  if (isMask) {
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent = "Mask painting is not available in Photoshop yet. Use Document, Layer, or File — alpha channel is included when present.";
+    wrap.append(hint);
+  }
   const actions = document.createElement("div");
   actions.className = "imageActions";
   const fromDoc = document.createElement("button");
@@ -249,7 +246,7 @@ function renderSelectField(key, ui, type) {
   if (serverType && !choices.length) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "Chưa kết nối server...";
+    opt.textContent = "Connect to server first...";
     select.append(opt);
   }
   for (const choice of choices) {

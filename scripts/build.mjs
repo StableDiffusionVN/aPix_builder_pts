@@ -1,6 +1,23 @@
 import esbuild from "esbuild";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const watch = process.argv.includes("--watch");
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+async function compileTemplates() {
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(root, "scripts", "compile-templates.mjs")], {
+      stdio: "inherit",
+      cwd: root
+    });
+    child.on("error", reject);
+    child.on("exit", code => (code === 0 ? resolve() : reject(new Error(`compile-templates exited ${code}`))));
+  });
+}
+
+await compileTemplates();
 
 const options = {
   entryPoints: ["src/main.js"],

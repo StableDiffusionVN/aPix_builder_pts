@@ -184,12 +184,21 @@ export async function uploadImageToComfy(target, upload, signal) {
   form.append("image", upload.blob, filename);
   form.append("type", "input");
   form.append("overwrite", "true");
-  const response = await fetch(`${target.httpBase}/upload/image`, {
-    method: "POST",
-    headers: target.headers,
-    body: form,
-    signal
-  });
+  let response;
+  try {
+    response = await fetch(`${target.httpBase}/upload/image`, {
+      method: "POST",
+      headers: target.headers,
+      body: form,
+      signal
+    });
+  } catch (error) {
+    const msg = error?.message || String(error);
+    if (/manifest entry not found|permission denied/i.test(msg)) {
+      throw new Error(`${msg} — add ${target.httpBase} to manifest.json network.domains, then unload and reload the plugin`);
+    }
+    throw error;
+  }
   if (!response.ok) throw new Error(`ComfyUI /upload/image failed: ${response.status} ${await response.text()}`);
   return response.json();
 }

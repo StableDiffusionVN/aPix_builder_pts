@@ -1,4 +1,3 @@
-import YAML from "yaml";
 import {
   state,
   els,
@@ -11,7 +10,8 @@ import {
   setProgress,
   setImageInputValue,
   readSettings,
-  saveSettings
+  saveSettings,
+  normalizeId
 } from "./state.js";
 
 import {
@@ -23,19 +23,23 @@ import {
 
 import {
   normalizeComfyTarget,
-  getClientId,
-  parseDataUrl,
-  uploadImageToComfy,
-  resolveWorkflowInput,
   setWorkflowValue,
   queuePrompt,
   waitForPromptCompletion,
   getHistory,
   collectOutputs,
   fetchOutputBytes,
-  fetchServerChoices,
-  canonicalDynamicType
+  fetchServerChoices
 } from "./services/comfy.js";
+
+import {
+  flattenInputs,
+  buildDefaults,
+  requestPayload,
+  validateWorkflowMappings,
+  normalizeValues,
+  isImageInputItem
+} from "./services/workflow.js";
 
 import {
   renderDynamicForm,
@@ -50,101 +54,9 @@ function cloneData(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function isImageInputItem(item) {
-  const type = String(item?.ui?.type || "").toLowerCase();
-  return type === "image" || type === "image_mask" || type === "file";
-}
-
-function flattenInputs(input = {}) {
-  const items = [];
-  for (const [key, item] of Object.entries(input)) {
-    if (item?.ui?.type === "col") {
-      for (const [childKey, child] of Object.entries(item.ui.col || {})) {
-        items.push({ key: `${key}.${childKey}`, ...child });
-      }
-    } else {
-      items.push({ key, ...item });
-    }
-  }
-  return items;
-}
-
-function normalizeId(id) {
-  return Array.isArray(id) ? id.join("|") : String(id);
-}
-
-function defaultValue(item) {
-  const ui = item.ui || {};
-  const type = String(ui.type || "").toLowerCase();
-  if (type === "seed") return "random_seed";
-  if (type === "checkbox") return Boolean(ui.value);
-  if (type === "boolean") return ui.value === true || ui.value === "true" ? true : false;
-  if (type === "number" || type === "int" || type === "float" || type === "slider") return ui.value ?? ui.minimum ?? 0;
-  if (type === "dropdown" || type === "menu" || type === "radio") return ui.value ?? ui.choices?.[0] ?? "";
-  if (type === "colorpicker") return ui.value || "#10b981";
-  if (type === "date") return ui.value || "";
-  if (type === "json") return ui.value || "{}";
-  if (canonicalDynamicType(type)) return ui.value ?? "";
-  return ui.value ?? "";
-}
-
-function buildDefaults(items) {
-  const values = {};
-  for (const item of items) {
-    if (!item.id) continue;
-    values[normalizeId(item.id)] = defaultValue(item);
-  }
-  return values;
-}
-
-function requestPayload(items, values) {
-  const payload = {};
-  for (const item of items) {
-    if (!item.id) continue;
-    const key = normalizeId(item.id);
-    const value = values[key];
-    if (Array.isArray(item.id)) {
-      item.id.forEach((id, index) => {
-        payload[id] = Array.isArray(value) ? value[index] : value;
-      });
-    } else {
-      payload[item.id] = value;
-    }
-  }
-  return payload;
-}
-
-function validateWorkflowMappings(config, workflow) {
-  for (const item of flattenInputs(config.input || {})) {
-    if (!item.id) continue;
-    const ids = Array.isArray(item.id) ? item.id : [item.id];
-    ids.forEach(id => resolveWorkflowInput(workflow, id));
-  }
-  for (const item of Object.values(config.output || {})) {
-    const nodeId = String(item.id || "");
-    if (!nodeId || !workflow[nodeId]) throw new Error(`Workflow output node not found: ${nodeId}`);
-  }
-}
-
-async function normalizeValues(values) {
-  const normalized = {};
-  let fileIndex = 0;
-  for (const [key, value] of Object.entries(values || {})) {
-    if (value === "random_seed") {
-      normalized[key] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
-    } else if (typeof value === "string" && value.startsWith("data:")) {
-      normalized[key] = { kind: "upload", index: fileIndex++, ...parseDataUrl(value) };
-    } else {
-      normalized[key] = value;
-    }
-  }
-  return normalized;
-}
-
 async function loadBuiltInTemplate(id) {
-  const yamlRaw = fs.readFileSync(`plugin:templates/${id}/app_build.yaml`, "utf8");
+  const config = JSON.parse(fs.readFileSync(`plugin:templates/${id}/app_build.json`, "utf8"));
   const workflow = JSON.parse(fs.readFileSync(`plugin:templates/${id}/api.json`, "utf8"));
-  const config = YAML.parse(yamlRaw);
   return { id, name: config?.app?.name || id, source: "bundled", config, workflow };
 }
 
@@ -154,9 +66,13 @@ async function readFolderText(folder, name) {
 }
 
 async function loadFolderTemplate(folder) {
-  const yamlRaw = await readFolderText(folder, "app_build.yaml");
+  let config;
+  try {
+    config = JSON.parse(await readFolderText(folder, "app_build.json"));
+  } catch {
+    throw new Error("Folder must contain app_build.json and api.json. Run npm run build to generate JSON from app_build.yaml.");
+  }
   const apiRaw = await readFolderText(folder, "api.json");
-  const config = YAML.parse(yamlRaw);
   return {
     id: `folder:${folder.name}`,
     name: `${config?.app?.name || folder.name} (folder)`,
@@ -277,12 +193,12 @@ async function testConnection() {
       credentials: "omit"
     });
     if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
-    setStatus("✓ Saved — ComfyUI connected");
+    setStatus("Saved — ComfyUI connected");
     fetchServerChoices().then(() => updateServerSelects()).catch(() => {});
   } catch (error) {
     const msg = error.message || String(error);
     if (/failed to fetch|network|blocked|insecure/i.test(msg)) {
-      setStatus(`Connection failed: plugin may be blocking HTTP — reload plugin after saving`);
+      setStatus("Connection failed: check server URL and reload plugin if HTTP is blocked");
     } else {
       setStatus(`Connection failed: ${msg}`);
     }
@@ -290,7 +206,6 @@ async function testConnection() {
 }
 
 async function runWorkflow() {
-  setStatus("Starting workflow...");
   if (state.running) {
     setStatus("Workflow is already running");
     return;
@@ -311,6 +226,7 @@ async function runWorkflow() {
   state.abortController = new AbortController();
 
   try {
+    setStatus("Starting workflow...");
     const selectionInfo = await getSelectionInfo();
     if (selectionInfo) setStatus("Selection detected, preparing selection-aware run...");
     const target = normalizeComfyTarget(state.settings.serverUrl);
@@ -325,7 +241,6 @@ async function runWorkflow() {
         request[requestKey] = await prepareSelectionLayerInputDataUrl(selectionInfo, imageKey);
       }
     } else {
-      // Không có vùng chọn: kiểm tra các image input chưa được gán giá trị
       const imageInputs = inputs.filter(item => item.id && isImageInputItem(item));
       const missingImageInputs = imageInputs.filter(item => {
         const key = normalizeId(item.id);
@@ -333,7 +248,7 @@ async function runWorkflow() {
         return !val || (typeof val === "string" && !val.startsWith("data:"));
       });
       if (missingImageInputs.length > 0) {
-        setStatus("Không có ảnh input, tự động dùng document hiện tại...");
+        setStatus("No image input set — using active document...");
         const docDataUrl = await exportActiveDocumentDataUrl();
         for (const item of missingImageInputs) {
           const key = normalizeId(item.id);
@@ -356,7 +271,7 @@ async function runWorkflow() {
     setStatus("Loading output history...");
     const historyRoot = await getHistory(target, queued.prompt_id, state.abortController.signal);
     const outputs = collectOutputs(state.config, historyRoot[queued.prompt_id], target);
-    
+
     let importedCount = 0;
     for (const output of outputs) {
       const { buffer } = await fetchOutputBytes(output, state.abortController.signal);
@@ -364,7 +279,9 @@ async function runWorkflow() {
       importedCount += 1;
     }
     setProgress();
-    setStatus(outputs.length ? `Completed prompt ${queued.prompt_id}, imported ${importedCount} layer(s)` : `Completed prompt ${queued.prompt_id}, no output images found`);
+    setStatus(outputs.length
+      ? `Completed prompt ${queued.prompt_id}, imported ${importedCount} layer(s)`
+      : `Completed prompt ${queued.prompt_id}, no output images found`);
   } catch (error) {
     setProgress();
     setStatus(`Run failed: ${error.message}`);
@@ -400,14 +317,9 @@ async function cancelRun() {
 
 function startRunFromUi(event) {
   event?.preventDefault?.();
-  event?.stopPropagation?.();
   const now = Date.now();
-  if (now - state.lastRunEventAt < 600) return;
+  if (now - state.lastRunEventAt < 400) return;
   state.lastRunEventAt = now;
-  setStatus("Run click received...");
-  if (els.runBtn.disabled && !state.running) {
-    els.runBtn.disabled = false;
-  }
   runWorkflow().catch(error => {
     console.error(error);
     setStatus(`Run failed: ${error.message}`);
@@ -419,45 +331,21 @@ function startRunFromUi(event) {
   });
 }
 
-function isRunButtonEvent(event) {
-  const target = event?.target;
-  if (!target) return false;
-  if (target.id === "runBtn") return true;
-  if (target.dataset?.action === "run") return true;
-  return Boolean(target.closest?.("#runBtn,[data-action='run']"));
-}
-
-function delegatedRunHandler(event) {
-  if (!isRunButtonEvent(event)) return;
-  startRunFromUi(event);
-}
-
-function safeBind(element, eventName, handler, label, options) {
+function safeBind(element, eventName, handler, label) {
   try {
-    element?.addEventListener?.(eventName, handler, options);
+    element?.addEventListener?.(eventName, handler);
   } catch (error) {
     console.warn(`Cannot bind ${label || eventName}`, error);
   }
 }
 
 function bindEvents() {
-  els.runBtn.onclick = startRunFromUi;
   safeBind(els.runBtn, "click", startRunFromUi, "run click");
   safeBind(els.runBtn, "pointerup", startRunFromUi, "run pointerup");
-  safeBind(els.runBtn, "mouseup", startRunFromUi, "run mouseup");
-  safeBind(els.runBtn, "touchend", startRunFromUi, "run touchend");
-  safeBind(document, "click", delegatedRunHandler, "document run click", true);
-  safeBind(document, "pointerup", delegatedRunHandler, "document run pointerup", true);
-  safeBind(document, "mouseup", delegatedRunHandler, "document run mouseup", true);
-  safeBind(document.body, "click", delegatedRunHandler, "body run click", true);
-  safeBind(window, "click", delegatedRunHandler, "window run click", true);
-  safeBind(window, "pointerup", delegatedRunHandler, "window run pointerup", true);
-
   safeBind(els.testConnectionBtn, "click", testConnection, "test click");
   safeBind(els.refreshTemplatesBtn, "click", loadTemplates, "refresh click");
   safeBind(els.chooseTemplateFolderBtn, "click", chooseTemplateFolder, "folder click");
   safeBind(els.templateSelect, "change", () => selectTemplate(selectedTemplateId()), "template change");
-  safeBind(els.templateSelect, "input", () => selectTemplate(selectedTemplateId()), "template input");
   safeBind(els.cancelBtn, "click", cancelRun, "cancel click");
 }
 

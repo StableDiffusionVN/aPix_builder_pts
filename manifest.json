@@ -8,6 +8,24 @@
     "app": "PS",
     "minVersion": "24.0.0"
   },
+  "icons": [
+    {
+      "width": 24,
+      "height": 24,
+      "path": "icons/apix-icon-24.png",
+      "scale": [1],
+      "theme": ["dark", "darkest", "light", "lightest"],
+      "species": ["generic"]
+    },
+    {
+      "width": 24,
+      "height": 24,
+      "path": "icons/apix-icon-48.png",
+      "scale": [2],
+      "theme": ["dark", "darkest", "light", "lightest"],
+      "species": ["generic"]
+    }
+  ],
   "requiredPermissions": {
     "localFileSystem": "fullAccess",
     "network": {
@@ -22,6 +40,24 @@
       "label": {
         "default": "aPix Builder"
       },
+      "icons": [
+        {
+          "width": 23,
+          "height": 23,
+          "path": "icons/apix-panel-23.png",
+          "scale": [1],
+          "theme": ["dark", "darkest", "light", "lightest"],
+          "species": ["generic"]
+        },
+        {
+          "width": 23,
+          "height": 23,
+          "path": "icons/apix-panel-46.png",
+          "scale": [2],
+          "theme": ["dark", "darkest", "light", "lightest"],
+          "species": ["generic"]
+        }
+      ],
       "minimumSize": {
         "width": 320,
         "height": 520
