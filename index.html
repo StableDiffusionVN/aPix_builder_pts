@@ -19,22 +19,52 @@
         <section class="section">
           <div class="sectionHeader">
             <h2>Settings</h2>
+            <button id="settingsToggleBtn" class="secondary compactButton" type="button">Hide</button>
           </div>
-          <div class="inputWithBtn">
-            <input id="serverUrlInput" type="text" placeholder="http://127.0.0.1:8188" />
-            <button id="testConnectionBtn" class="secondary" type="button">Check</button>
+          <div id="settingsBody" class="settingsBody">
+            <label class="field">
+              <span>Run mode</span>
+              <select id="executionModeSelect">
+                <option value="local">ComfyUI Local</option>
+                <option value="runninghub-app">RunningHub AI App</option>
+                <option value="runninghub-wf">RunningHub Workflow</option>
+              </select>
+            </label>
+            <div class="inputWithBtn">
+              <input id="serverUrlInput" type="text" placeholder="http://127.0.0.1:8188" />
+              <button id="testConnectionBtn" class="secondary" type="button">Check</button>
+            </div>
+            <div id="localWorkflowSettings" class="localWorkflowSettings">
+              <div class="sectionHeader compactHeader">
+                <h2>Workflow</h2>
+                <button id="chooseTemplateFolderBtn" class="secondary" type="button">Folder</button>
+              </div>
+              <label class="field">
+                <span>Template</span>
+                <select id="templateSelect"></select>
+              </label>
+            </div>
+            <div id="runningHubSettings" class="runningHubSettings" hidden>
+              <label class="field">
+                <span>RunningHub API Key</span>
+                <input id="runningHubApiKeyInput" type="password" placeholder="API key" />
+              </label>
+              <div id="runningHubAppSettings" class="runningHubAppSettings" hidden>
+                <label class="field">
+                  <span>Web App</span>
+                  <select id="runningHubAppSelect">
+                    <option value="2039924771751731201">SDVN Upscale</option>
+                    <option value="custom">Custom WebApp ID</option>
+                  </select>
+                </label>
+                <label id="runningHubCustomWebappField" class="field" hidden>
+                  <span>Custom WebApp ID</span>
+                  <input id="runningHubCustomWebappIdInput" type="text" placeholder="2039924771751731201" />
+                </label>
+                <button id="loadRunningHubNodesBtn" class="secondary" type="button">Load RunningHub Nodes</button>
+              </div>
+            </div>
           </div>
-        </section>
-
-        <section class="section">
-          <div class="sectionHeader">
-            <h2>Workflow</h2>
-            <button id="chooseTemplateFolderBtn" class="secondary" type="button">Folder</button>
-          </div>
-          <label class="field">
-            <span>Template</span>
-            <select id="templateSelect"></select>
-          </label>
         </section>
 
         <section class="section">
@@ -52,7 +82,7 @@
           <progress id="progressBar" value="0" max="1" hidden></progress>
         </div>
         <div class="row">
-          <button id="runBtn" class="primary" type="button" data-action="run">Run Workflow</button>
+          <button id="runBtn" class="primary" type="button" data-action="run">Run</button>
           <button id="cancelBtn" class="danger" type="button" disabled>Cancel</button>
         </div>
       </section>

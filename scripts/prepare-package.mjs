@@ -10,6 +10,7 @@ const entries = [
   "styles.css",
   "dist",
   "templates",
+  "templates-rh",
   "icons"
 ];
 

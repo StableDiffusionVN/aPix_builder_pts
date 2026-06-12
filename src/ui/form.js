@@ -1,5 +1,6 @@
 import { state, els, setStatus, setImageInputValue, normalizeId } from "../state.js";
 import { canonicalDynamicType } from "../services/comfy.js";
+import { getActiveSubInputs, getMenuSubOptions, isMenuSub, menuSubValueKey } from "../services/workflow.js";
 import { exportActiveDocumentDataUrl, exportActiveLayerDataUrl } from "../services/photoshop.js";
 import { readUxFileAsDataUrl } from "../utils/files.js";
 
@@ -38,105 +39,62 @@ export function updateServerSelects() {
 export function renderDynamicForm(items) {
   els.dynamicForm.innerHTML = "";
   for (const item of items) {
-    const ui = item.ui || {};
-    const type = String(ui.type || "string").toLowerCase();
-    if (type === "note" || type === "markdown") {
-      const note = document.createElement("div");
-      note.className = "note";
-      note.innerHTML = markdownToHtml(ui.markdown || ui.value || "");
-      note.querySelectorAll("a[data-href]").forEach(a => {
-        a.addEventListener("click", e => {
-          e.preventDefault();
-          try { require("uxp").shell.openExternal(a.dataset.href); } catch {}
-        });
+    const node = renderDynamicItem(item);
+    if (node) els.dynamicForm.append(node);
+  }
+}
+
+function renderDynamicItem(item) {
+  const ui = item.ui || {};
+  const type = String(ui.type || "string").toLowerCase();
+  if (type === "note" || type === "markdown") {
+    const note = document.createElement("div");
+    note.className = "note";
+    note.innerHTML = markdownToHtml(ui.markdown || ui.value || "");
+    note.querySelectorAll("a[data-href]").forEach(a => {
+      a.addEventListener("click", e => {
+        e.preventDefault();
+        try { require("uxp").shell.openExternal(a.dataset.href); } catch {}
       });
-      els.dynamicForm.append(note);
-      continue;
-    }
-    if (type === "html") {
-      const block = document.createElement("div");
-      block.className = "note";
-      block.innerHTML = ui.value || "";
-      els.dynamicForm.append(block);
-      continue;
-    }
-    if (!item.id) continue;
-    const key = normalizeId(item.id);
-    const field = document.createElement("label");
-    field.className = "field";
-    const label = document.createElement("span");
-    label.textContent = ui.label || item.key;
-    field.append(label);
+    });
+    return note;
+  }
+  if (type === "html") {
+    const block = document.createElement("div");
+    block.className = "note";
+    block.innerHTML = ui.value || "";
+    return block;
+  }
+  if (isMenuSub(item)) return renderMenuSubField(item);
+  if (!item.id) return null;
 
-    const isSlider = type === "slider" || ui.display === "slider";
-    const isDynamic = Boolean(canonicalDynamicType(type));
+  const key = normalizeId(item.id);
+  const field = document.createElement("label");
+  field.className = "field";
+  const label = document.createElement("span");
+  label.textContent = ui.label || item.key;
+  field.append(label);
 
-    if (type === "image" || type === "image_mask" || type === "file") {
-      field.append(renderImageField(key, type === "image_mask"));
-    } else if (type === "text") {
+  const isSlider = type === "slider" || ui.display === "slider";
+  const isDynamic = Boolean(canonicalDynamicType(type));
+
+  if (type === "image" || type === "image_mask" || type === "file") {
+    field.append(renderImageField(key, type === "image_mask"));
+  } else if (type === "text") {
+    const textarea = document.createElement("textarea");
+    textarea.value = state.values[key] ?? "";
+    textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
+    field.append(textarea);
+  } else if (type === "string") {
+    const multiline = ui.display === "multiline" || ui.multiline === true || Number(ui.lines || 1) > 1;
+    if (multiline) {
       const textarea = document.createElement("textarea");
+      textarea.rows = ui.lines || 3;
+      textarea.placeholder = ui.placeholder || "";
       textarea.value = state.values[key] ?? "";
       textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
       field.append(textarea);
-    } else if (type === "string") {
-      const multiline = ui.display === "multiline" || ui.multiline === true || Number(ui.lines || 1) > 1;
-      if (multiline) {
-        const textarea = document.createElement("textarea");
-        textarea.rows = ui.lines || 3;
-        textarea.placeholder = ui.placeholder || "";
-        textarea.value = state.values[key] ?? "";
-        textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
-        field.append(textarea);
-      } else {
-        const input = document.createElement("input");
-        input.type = "text";
-        input.placeholder = ui.placeholder || "";
-        input.value = state.values[key] ?? "";
-        input.addEventListener("input", () => { state.values[key] = input.value; });
-        field.append(input);
-      }
-    } else if (["int", "float", "number", "slider"].includes(type)) {
-      if (isSlider) {
-        field.classList.add("field--slider");
-      } else {
-        field.classList.add("field--inline");
-      }
-      field.append(renderNumberField(key, ui, type));
-    } else if (type === "seed") {
-      field.classList.add("field--inline");
-      field.append(renderSeedField(key));
-    } else if (type === "radio") {
-      field.append(renderRadioField(key, ui));
-    } else if (["dropdown", "menu"].includes(type) || isDynamic) {
-      field.append(renderSelectField(key, ui, type));
-    } else if (type === "boolean") {
-      field.classList.add("field--inline");
-      field.append(renderBooleanField(key));
-    } else if (type === "checkbox") {
-      field.classList.add("field--inline");
-      field.append(renderCheckboxField(key));
-    } else if (type === "colorpicker") {
-      const input = document.createElement("input");
-      input.type = "color";
-      input.value = state.values[key] || "#10b981";
-      input.addEventListener("input", () => { state.values[key] = input.value; });
-      field.classList.add("field--inline");
-      field.append(input);
-    } else if (type === "date") {
-      const input = document.createElement("input");
-      input.type = "date";
-      input.value = state.values[key] || "";
-      input.addEventListener("input", () => { state.values[key] = input.value; });
-      field.classList.add("field--inline");
-      field.append(input);
-    } else if (type === "json") {
-      const textarea = document.createElement("textarea");
-      textarea.rows = 5;
-      textarea.value = state.values[key] ?? "{}";
-      textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
-      field.append(textarea);
     } else {
-      // fallback: single-line text
       const input = document.createElement("input");
       input.type = "text";
       input.placeholder = ui.placeholder || "";
@@ -144,8 +102,107 @@ export function renderDynamicForm(items) {
       input.addEventListener("input", () => { state.values[key] = input.value; });
       field.append(input);
     }
-    els.dynamicForm.append(field);
+  } else if (["int", "float", "number", "slider"].includes(type)) {
+    field.classList.add(isSlider ? "field--slider" : "field--inline");
+    field.append(renderNumberField(key, ui, type));
+  } else if (type === "seed") {
+    field.classList.add("field--inline");
+    field.append(renderSeedField(key));
+  } else if (type === "radio") {
+    field.append(renderRadioField(key, ui));
+  } else if (["dropdown", "menu"].includes(type) || isDynamic) {
+    field.append(renderSelectField(key, ui, type));
+  } else if (type === "boolean") {
+    field.classList.add("field--inline");
+    field.append(renderBooleanField(key));
+  } else if (type === "checkbox") {
+    field.classList.add("field--inline");
+    field.append(renderCheckboxField(key));
+  } else if (type === "colorpicker") {
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = state.values[key] || "#10b981";
+    input.addEventListener("input", () => { state.values[key] = input.value; });
+    field.classList.add("field--inline");
+    field.append(input);
+  } else if (type === "date") {
+    const input = document.createElement("input");
+    input.type = "date";
+    input.value = state.values[key] || "";
+    input.addEventListener("input", () => { state.values[key] = input.value; });
+    field.classList.add("field--inline");
+    field.append(input);
+  } else if (type === "json") {
+    const textarea = document.createElement("textarea");
+    textarea.rows = 5;
+    textarea.value = state.values[key] ?? "{}";
+    textarea.addEventListener("input", () => { state.values[key] = textarea.value; });
+    field.append(textarea);
+  } else {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = ui.placeholder || "";
+    input.value = state.values[key] ?? "";
+    input.addEventListener("input", () => { state.values[key] = input.value; });
+    field.append(input);
   }
+  return field;
+}
+
+function renderMenuSubField(item) {
+  const ui = item.ui || {};
+  const key = menuSubValueKey(item);
+  const options = getMenuSubOptions(item);
+  const menuValue = String(state.values[key] ?? ui.value ?? options[0]?.value ?? "");
+  const section = document.createElement("section");
+  section.className = "menuSubField";
+
+  const field = document.createElement("label");
+  field.className = "field";
+  const label = document.createElement("span");
+  label.textContent = ui.label || item.key;
+  const select = document.createElement("select");
+  if (!options.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No choices";
+    select.append(option);
+  }
+  for (const choice of options) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    select.append(option);
+  }
+  select.value = options.some(option => option.value === menuValue) ? menuValue : (options[0]?.value || "");
+  state.values[key] = select.value;
+  field.append(label, select);
+  section.append(field);
+
+  const subWrap = document.createElement("div");
+  const renderActiveSubs = () => {
+    subWrap.innerHTML = "";
+    subWrap.className = "menuSubInputs";
+    const activeSubs = getActiveSubInputs(item, state.values[key]);
+    if (!activeSubs.length) {
+      const empty = document.createElement("div");
+      empty.className = "menuSubEmpty";
+      empty.textContent = `No inputs for ${state.values[key] || "this choice"}.`;
+      subWrap.append(empty);
+      return;
+    }
+    for (const subItem of activeSubs) {
+      const node = renderDynamicItem(subItem);
+      if (node) subWrap.append(node);
+    }
+  };
+  select.addEventListener("change", () => {
+    state.values[key] = select.value;
+    renderActiveSubs();
+  });
+  renderActiveSubs();
+  section.append(subWrap);
+  return section;
 }
 
 function renderImageField(key, isMask = false) {
@@ -256,6 +313,7 @@ function renderSelectField(key, ui, type) {
     select.append(option);
   }
   select.value = state.values[key] ?? choices[0] ?? "";
+  if (select.value !== state.values[key]) state.values[key] = select.value;
   select.addEventListener("change", () => { state.values[key] = select.value; });
   if (serverType) {
     select.dataset.serverType = serverType;

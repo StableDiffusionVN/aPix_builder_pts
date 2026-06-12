@@ -21,6 +21,10 @@ body {
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -289,6 +293,26 @@ button:disabled {
   min-width: 80px;
 }
 
+.compactButton {
+  min-width: 56px;
+  height: 26px;
+  padding: 4px 8px;
+}
+
+.settingsBody {
+  margin-top: 10px;
+}
+
+.localWorkflowSettings {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.compactHeader {
+  margin-bottom: 8px;
+}
+
 .note {
   padding: 10px;
   border: 1px solid var(--line);
@@ -298,6 +322,66 @@ button:disabled {
   white-space: pre-wrap;
   max-height: 84px;
   overflow-y: auto;
+}
+
+.runningHubAppSettings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.runningHubSettings {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.runningHubSettings button {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.menuSubField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.menuSubField > .field {
+  margin-top: 0;
+}
+
+.menuSubInputs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.menuSubInputs > .field {
+  min-width: 0;
+}
+
+.menuSubInputs > .field:first-child {
+  margin-top: 0;
+}
+
+.menuSubEmpty {
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
 }
 
 .imageActions {

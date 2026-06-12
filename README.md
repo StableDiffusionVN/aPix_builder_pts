@@ -129,15 +129,61 @@ The form is generated from the template config. Common controls:
 | `int`, `float`, `slider` | Numeric inputs |
 | `seed` | Random seed or fixed number (🎲 button) |
 | `dropdown`, `menu` | Static choices from YAML |
+| `menu-sub` | Menu choice with extra inputs shown only for the active choice |
 | `checkpoints`, `loras`, etc. | Populated from ComfyUI after server connection |
 | `note`, `markdown` | Read-only help text |
 
 ### 4. Run workflow
 
-1. Click **Run Workflow**
+1. Click **Run**
 2. Progress appears in the status bar and progress indicator
 3. On completion, output images are placed as new layers in the active document
 4. Click **Cancel** to abort (sends ComfyUI `/interrupt`)
+
+### RunningHub modes
+
+The panel supports two cloud execution modes in addition to local ComfyUI:
+
+#### RunningHub AI App
+
+Use **Run mode → RunningHub AI App** to run a hosted RunningHub WebApp:
+
+1. Enter your RunningHub API Key and WebApp ID
+2. Click **Load RunningHub Nodes**
+3. Fill the generated node fields
+4. Click **Run**
+
+#### RunningHub Workflow
+
+Use **Run mode → RunningHub Workflow** to run a YAML template against a RunningHub workflow ID:
+
+1. Enter your RunningHub API Key
+2. Select a template from **templates-rh/** (bundled: `klein-edit-image-lora`) or a custom folder
+3. Fill the form generated from `app_build.yaml`
+4. Click **Run**
+
+RunningHub Workflow templates use the same input mapping syntax as local templates (`node-field` ids such as `48-image`), plus a required `runninghub` section in YAML:
+
+```yaml
+runninghub:
+  workflowId: "2064644362323189762"
+  saveWorkflowJson: true
+  addMetadata: false
+  usePersonalQueue: false
+  accessPassword: ""
+```
+
+| Field | Role |
+|-------|------|
+| `workflowId` | RunningHub workflow to execute (required unless only using node list mode with `saveWorkflowJson: false`) |
+| `saveWorkflowJson` | When `true` (default if `api.json` exists), patch and submit full workflow JSON via `/task/openapi/create` |
+| `addMetadata` | Pass `addMetadata: true` to RunningHub task API |
+| `usePersonalQueue` | Pass `usePersonalQueue: true` for personal queue |
+| `accessPassword` | Optional workflow access password |
+
+RunningHub Workflow templates do **not** require an `output` section — outputs are returned by RunningHub task polling.
+
+Image fields can use Document, Layer, or File inputs in both RunningHub modes. The plugin uploads data URL inputs to RunningHub, polls task outputs, then imports returned images as Photoshop layers. Cancel aborts the local request/polling; already-submitted cloud tasks may continue on RunningHub.
 
 ### Image input behavior
 
@@ -167,10 +213,15 @@ aPix_builder_pts/
 │   ├── ui/form.js         # Dynamic form renderer
 │   └── utils/files.js     # UXP file helpers
 ├── templates/
-│   └── <template-id>/
-│       ├── app_build.yaml # Source config (edit this)
-│       ├── app_build.json # Compiled config (generated at build)
-│       └── api.json       # ComfyUI workflow API format
+│   └── <template-id>/     # Local ComfyUI templates
+│       ├── app_build.yaml
+│       ├── app_build.json
+│       └── api.json
+├── templates-rh/
+│   └── <template-id>/     # RunningHub Workflow templates
+│       ├── app_build.yaml   # includes runninghub.workflowId
+│       ├── app_build.json
+│       └── api.json         # optional when saveWorkflowJson: false
 ├── scripts/
 │   ├── build.mjs          # esbuild bundle
 │   ├── compile-templates.mjs
@@ -190,7 +241,13 @@ aPix_builder_pts/
 | `test-2output` | Two-output test workflow |
 | `upscale-klein` | Klein upscale workflow |
 
-Source files live in `templates/<id>/`. Edit `app_build.yaml`, then run `npm run build` to regenerate `app_build.json` and reload the plugin.
+### Bundled RunningHub Workflow templates
+
+| ID | Description |
+|----|-------------|
+| `klein-edit-image-lora` | Klein edit image with LoRA (RunningHub cloud) |
+
+Source files live in `templates/<id>/` (local) or `templates-rh/<id>/` (RunningHub Workflow). Edit `app_build.yaml`, then run `npm run build` to regenerate `app_build.json` and reload the plugin.
 
 ### Template file roles
 
@@ -204,20 +261,34 @@ At runtime the plugin reads **`app_build.json`** and **`api.json`**. YAML is onl
 
 ### Custom workflow folder
 
-Click **Folder** in the panel and select a directory containing:
+Click **Folder** in the panel and select either a single template directory or a parent directory containing multiple template subdirectories.
+
+Each template directory should contain:
 
 - `api.json` — ComfyUI workflow
-- `app_build.json` — UI config
+- `app_build.json` or `app_build.yaml` — UI config
 
-If you only have `app_build.yaml`, generate JSON first:
+Example parent directory:
+
+```text
+my-templates/
+├── portrait-upscale/
+│   ├── api.json
+│   └── app_build.yaml
+└── product-edit/
+    ├── api.json
+    └── app_build.json
+```
+
+The plugin scans one level of subdirectories and adds every valid template to the Template dropdown.
+
+If you prefer precompiled JSON, generate it with:
 
 ```bash
 npm run build
 # or only templates:
 npm run compile:templates
 ```
-
-Then copy `app_build.json` into your custom folder alongside `api.json`.
 
 The folder path is stored via UXP persistent token and reloaded on next panel open.
 
@@ -261,7 +332,7 @@ output:
 
 ### Supported UI types
 
-`image`, `image_mask`, `file`, `text`, `string`, `int`, `float`, `number`, `slider`, `menu`, `dropdown`, `radio`, `checkbox`, `boolean`, `seed`, `colorpicker`, `date`, `json`, `note`, `markdown`, `html`, `col`
+`image`, `image_mask`, `file`, `text`, `string`, `int`, `float`, `number`, `slider`, `menu`, `menu-sub`, `dropdown`, `radio`, `checkbox`, `boolean`, `seed`, `colorpicker`, `date`, `json`, `note`, `markdown`, `html`, `col`
 
 Dynamic model types (populated from server): `checkpoints`, `loras`, `vae`, `controlnets`, `upscale_models`, `samplers`, `schedulers`, `unet`, `style_models`, `embeddings`, `clip`, `clip_vision` (and aliases).
 
@@ -285,9 +356,11 @@ Typical edit cycle:
 ### Adding a new bundled template
 
 1. Create `templates/my-workflow/` with `app_build.yaml` and `api.json`
-2. Add `"my-workflow"` to `BUILTIN_TEMPLATES` in `src/state.js`
+2. Add `"my-workflow"` to `BUILTIN_TEMPLATES` or `BUILTIN_RH_TEMPLATES` in `src/state.js`
 3. Run `npm run build`
 4. Reload plugin in UXP Developer Tool
+
+For RunningHub Workflow templates, place files under `templates-rh/<id>/`, include `runninghub.workflowId` in YAML, and register the id in `BUILTIN_RH_TEMPLATES`.
 
 ## Packaging
 
