@@ -1,5 +1,11 @@
 import { normalizeId } from "../state.js";
 import { canonicalDynamicType, parseDataUrl, resolveWorkflowInput } from "./comfy.js";
+import {
+  lookupMenuSubFields,
+  menuChoiceOptions,
+  parseMenuChoices,
+  resolveMenuStoredValue
+} from "../lib/menuChoices.js";
 
 export function flattenInputs(input = {}) {
   const items = [];
@@ -29,19 +35,15 @@ export function menuSubValueKey(item) {
 }
 
 export function getMenuSubOptions(item) {
-  const choices = item?.ui?.choices;
-  const sub = item?.ui?.sub;
+  const ui = item?.ui || {};
+  const choices = ui.choices;
+  const sub = ui.sub;
+  const options = menuChoiceOptions(ui);
   if (Array.isArray(choices)) {
-    return choices.map(choice => {
-      if (choice && typeof choice === "object") {
-        const value = choice.value ?? choice.id ?? choice.label ?? "";
-        return {
-          value: String(value),
-          label: String(choice.label ?? value)
-        };
-      }
-      return { value: String(choice), label: String(choice) };
-    });
+    return parseMenuChoices(choices, options).map(choice => ({
+      value: choice.value,
+      label: choice.label
+    }));
   }
   const source = choices && typeof choices === "object" ? choices
     : sub && typeof sub === "object" ? sub
@@ -51,16 +53,23 @@ export function getMenuSubOptions(item) {
 
 function menuSubFields(item, selected) {
   const ui = item?.ui || {};
-  if (ui.sub && typeof ui.sub === "object") return ui.sub[selected] || {};
+  const options = menuChoiceOptions(ui);
+  if (ui.sub && typeof ui.sub === "object") {
+    return lookupMenuSubFields(ui.sub, selected, ui.choices, options);
+  }
   if (ui.choices && !Array.isArray(ui.choices) && typeof ui.choices === "object") {
     const choice = ui.choices[selected];
     return choice?.sub || choice?.inputs || choice?.fields || choice || {};
   }
   if (Array.isArray(ui.choices)) {
+    const parsed = parseMenuChoices(ui.choices, options);
+    const match = parsed.find(entry => entry.value === selected || entry.raw === selected);
     const choice = ui.choices.find(entry =>
       entry && typeof entry === "object"
       && String(entry.value ?? entry.id ?? entry.label ?? "") === selected);
-    return choice?.sub || choice?.inputs || choice?.fields || {};
+    return match
+      ? (choice?.sub || choice?.inputs || choice?.fields || {})
+      : (choice?.sub || choice?.inputs || choice?.fields || {});
   }
   return {};
 }
@@ -115,12 +124,19 @@ export function getActiveInputItems(items, values = {}) {
 export function defaultValue(item) {
   const ui = item.ui || {};
   const type = String(ui.type || "").toLowerCase();
-  if (type === "menu-sub") return String(ui.value ?? getMenuSubOptions(item)[0]?.value ?? "");
+  if (type === "menu-sub") {
+    const options = menuChoiceOptions(ui);
+    return resolveMenuStoredValue(ui.value ?? getMenuSubOptions(item)[0]?.value, ui.choices, options);
+  }
   if (type === "seed") return "random_seed";
   if (type === "checkbox") return Boolean(ui.value);
   if (type === "boolean") return ui.value === true || ui.value === "true";
   if (type === "number" || type === "int" || type === "float" || type === "slider") return ui.value ?? ui.minimum ?? 0;
-  if (type === "dropdown" || type === "menu" || type === "radio") return ui.value ?? ui.choices?.[0] ?? "";
+  if (type === "dropdown" || type === "menu" || type === "radio") {
+    const options = menuChoiceOptions(ui);
+    const resolved = resolveMenuStoredValue(ui.value, ui.choices, options);
+    return resolved || parseMenuChoices(ui.choices, options)[0]?.value || "";
+  }
   if (type === "colorpicker") return ui.value || "#10b981";
   if (type === "date") return ui.value || "";
   if (type === "json") return ui.value || "{}";

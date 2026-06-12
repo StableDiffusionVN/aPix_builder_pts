@@ -1,6 +1,7 @@
 import { state, els, setStatus, setImageInputValue, normalizeId } from "../state.js";
 import { canonicalDynamicType } from "../services/comfy.js";
 import { getActiveSubInputs, getMenuSubOptions, isMenuSub, menuSubValueKey } from "../services/workflow.js";
+import { menuChoiceOptions, parseMenuChoices, resolveMenuStoredValue } from "../lib/menuChoices.js";
 import { exportActiveDocumentDataUrl, exportActiveLayerDataUrl } from "../services/photoshop.js";
 import { readUxFileAsDataUrl } from "../utils/files.js";
 
@@ -297,9 +298,12 @@ function renderSelectField(key, ui, type) {
   const select = document.createElement("select");
   const serverType = canonicalDynamicType(type);
   const serverChoices = serverType ? state.serverChoices[serverType] : null;
-  const choices = serverChoices?.length ? serverChoices
-    : ui.choices?.length ? ui.choices
-    : [ui.value || ""].filter(Boolean);
+  const menuOptions = menuChoiceOptions(ui);
+  const parsedChoices = Array.isArray(ui.choices) ? parseMenuChoices(ui.choices, menuOptions) : [];
+  const choices = serverChoices?.length ? serverChoices.map(value => ({ value, label: value }))
+    : parsedChoices.length ? parsedChoices
+      : Array.isArray(ui.choices) ? ui.choices.map(value => ({ value: String(value), label: String(value) }))
+        : ui.value ? [{ value: String(ui.value), label: String(ui.value) }] : [];
   if (serverType && !choices.length) {
     const opt = document.createElement("option");
     opt.value = "";
@@ -308,12 +312,13 @@ function renderSelectField(key, ui, type) {
   }
   for (const choice of choices) {
     const option = document.createElement("option");
-    option.value = choice;
-    option.textContent = choice;
+    option.value = choice.value;
+    option.textContent = choice.label;
     select.append(option);
   }
-  select.value = state.values[key] ?? choices[0] ?? "";
-  if (select.value !== state.values[key]) state.values[key] = select.value;
+  const stored = resolveMenuStoredValue(state.values[key] ?? ui.value, ui.choices, menuOptions);
+  select.value = stored || choices[0]?.value || "";
+  state.values[key] = select.value;
   select.addEventListener("change", () => { state.values[key] = select.value; });
   if (serverType) {
     select.dataset.serverType = serverType;
@@ -325,21 +330,24 @@ function renderSelectField(key, ui, type) {
 function renderRadioField(key, ui) {
   const wrap = document.createElement("div");
   wrap.className = "radioGroup";
-  const choices = ui.choices || [];
-  for (const choice of choices) {
+  const menuOptions = menuChoiceOptions(ui);
+  const parsedChoices = parseMenuChoices(ui.choices || [], menuOptions);
+  const stored = resolveMenuStoredValue(state.values[key] ?? ui.value, ui.choices, menuOptions);
+  for (const choice of parsedChoices) {
     const radioLabel = document.createElement("label");
     radioLabel.className = "radioItem";
     const input = document.createElement("input");
     input.type = "radio";
     input.name = `radio-${key}`;
-    input.value = choice;
-    input.checked = (state.values[key] ?? choices[0]) === choice;
-    input.addEventListener("change", () => { if (input.checked) state.values[key] = choice; });
+    input.value = choice.value;
+    input.checked = stored === choice.value;
+    input.addEventListener("change", () => { if (input.checked) state.values[key] = choice.value; });
     const span = document.createElement("span");
-    span.textContent = choice;
+    span.textContent = choice.label;
     radioLabel.append(input, span);
     wrap.append(radioLabel);
   }
+  state.values[key] = stored || parsedChoices[0]?.value || "";
   return wrap;
 }
 

@@ -15,6 +15,81 @@
       __defProp(target, name, { get: all[name], enumerable: true });
   };
 
+  // src/utils/fetchRetry.js
+  var fetchRetry_exports = {};
+  __export(fetchRetry_exports, {
+    fetchWithRetry: () => fetchWithRetry
+  });
+  function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new Error("Request cancelled"));
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new Error("Request cancelled"));
+      }, { once: true });
+    });
+  }
+  function shouldRetryResponse(response) {
+    if (!response) return true;
+    if (response.ok) return false;
+    if (response.status === 408 || response.status === 429) return true;
+    if (response.status >= 500) return true;
+    return response.status < 400;
+  }
+  function isAbortError(error) {
+    const message = String(error?.message || error || "");
+    return /aborted|cancel/i.test(message);
+  }
+  async function fetchWithRetry(url, options = {}) {
+    const {
+      signal,
+      headers,
+      maxAttempts = DEFAULT_MAX_ATTEMPTS,
+      maxDurationMs = DEFAULT_MAX_DURATION_MS,
+      initialDelayMs = DEFAULT_INITIAL_DELAY_MS,
+      maxDelayMs = DEFAULT_MAX_DELAY_MS,
+      onRetry
+    } = options;
+    const started = Date.now();
+    let attempt = 0;
+    let lastError = null;
+    while (attempt < maxAttempts) {
+      if (signal?.aborted) throw new Error("Request cancelled");
+      attempt += 1;
+      try {
+        const response = await fetch(url, { headers, signal });
+        if (response.ok) return response;
+        lastError = new Error(`HTTP ${response.status}`);
+        if (!shouldRetryResponse(response) || attempt >= maxAttempts) throw lastError;
+      } catch (error) {
+        if (signal?.aborted || isAbortError(error)) throw error;
+        lastError = error;
+        if (attempt >= maxAttempts) throw error;
+      }
+      const elapsed = Date.now() - started;
+      if (elapsed >= maxDurationMs) break;
+      const delay3 = Math.min(maxDelayMs, Math.round(initialDelayMs * 1.6 ** (attempt - 1)));
+      const waitMs = Math.min(delay3, maxDurationMs - elapsed);
+      if (waitMs <= 0) break;
+      onRetry?.({ attempt, maxAttempts, waitMs, error: lastError });
+      await sleep(waitMs, signal);
+    }
+    throw lastError || new Error("Fetch failed after retries");
+  }
+  var DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_DURATION_MS, DEFAULT_INITIAL_DELAY_MS, DEFAULT_MAX_DELAY_MS;
+  var init_fetchRetry = __esm({
+    "src/utils/fetchRetry.js"() {
+      DEFAULT_MAX_ATTEMPTS = 10;
+      DEFAULT_MAX_DURATION_MS = 12e4;
+      DEFAULT_INITIAL_DELAY_MS = 2e3;
+      DEFAULT_MAX_DELAY_MS = 15e3;
+    }
+  });
+
   // src/services/comfy.js
   var comfy_exports = {};
   __export(comfy_exports, {
@@ -328,14 +403,15 @@
     }
     return outputs;
   }
-  async function fetchOutputBytes(output, signal) {
-    const response = await fetch(output.url, {
+  async function fetchOutputBytes(output, signal, options = {}) {
+    const { fetchWithRetry: fetchWithRetry2 } = await Promise.resolve().then(() => (init_fetchRetry(), fetchRetry_exports));
+    const response = await fetchWithRetry2(output.url, {
       headers: output.headers || {},
-      signal
+      signal,
+      onRetry: ({ attempt, waitMs }) => {
+        options.onStatus?.(`Output download failed, retrying (${attempt}) in ${Math.ceil(waitMs / 1e3)}s...`);
+      }
     });
-    if (!response.ok) {
-      throw new Error(`${response.status} ${await response.text()}`);
-    }
     return {
       buffer: await response.arrayBuffer(),
       mimeType: response.headers.get("content-type") || "image/png"
@@ -403,11 +479,13 @@
   });
 
   // src/services/runninghub.js
-  function loadExecutionMode() {
-    const stored = localStorage.getItem(EXECUTION_MODE_KEY);
-    if (stored === "runninghub") return "runninghub-app";
-    if (stored === "runninghub-app" || stored === "runninghub-wf") return stored;
+  function normalizeExecutionMode(mode) {
+    if (mode === "runninghub" || mode === "runninghub-app") return "runninghub-app";
+    if (mode === "runninghub-wf") return "runninghub-wf";
     return "local";
+  }
+  function loadExecutionMode() {
+    return normalizeExecutionMode(localStorage.getItem(EXECUTION_MODE_KEY));
   }
   function loadRunningHubSettings() {
     try {
@@ -422,12 +500,8 @@
     }
   }
   function saveExecutionMode(mode) {
-    const normalized = mode === "runninghub" ? "runninghub-app" : mode;
-    if (normalized === "runninghub-app" || normalized === "runninghub-wf") {
-      localStorage.setItem(EXECUTION_MODE_KEY, normalized);
-    } else {
-      localStorage.setItem(EXECUTION_MODE_KEY, "local");
-    }
+    const normalized = normalizeExecutionMode(mode);
+    localStorage.setItem(EXECUTION_MODE_KEY, normalized);
   }
   function saveRunningHubSettings(settings) {
     localStorage.setItem(RUNNINGHUB_SETTINGS_KEY, JSON.stringify({
@@ -567,14 +641,48 @@
   function withSignal(options = {}, signal) {
     return signal ? { ...options, signal } : options;
   }
-  async function getWebappNodes(apiKey, webappId, signal) {
+  function parseWorkflowPrompt(prompt) {
+    if (!prompt) throw new Error("RunningHub did not return workflow prompt");
+    if (typeof prompt === "object") return prompt;
+    if (typeof prompt !== "string") throw new Error("Invalid workflow JSON from RunningHub");
+    try {
+      return JSON.parse(prompt);
+    } catch {
+      try {
+        return JSON.parse(JSON.parse(prompt));
+      } catch {
+        throw new Error("Invalid workflow JSON from RunningHub");
+      }
+    }
+  }
+  async function getWorkflowJson(apiKey, workflowId, signal) {
+    const response = await fetch(`${RUNNINGHUB_BASE}/api/openapi/getJsonApiFormat`, {
+      ...withSignal({}, signal),
+      method: "POST",
+      headers: rhHeaders(apiKey, { "content-type": "application/json" }),
+      body: JSON.stringify({ apiKey, workflowId })
+    });
+    const data = await readRunningHubEnvelope(response);
+    return parseWorkflowPrompt(data.data?.prompt);
+  }
+  function normalizeWebappCallDemo(payload = {}) {
+    return {
+      webappName: String(payload.webappName || "").trim(),
+      accessEncrypted: Boolean(payload.accessEncrypted),
+      statisticsInfo: payload.statisticsInfo && typeof payload.statisticsInfo === "object" ? payload.statisticsInfo : null,
+      covers: Array.isArray(payload.covers) ? payload.covers : [],
+      tags: Array.isArray(payload.tags) ? payload.tags : [],
+      nodeInfoList: Array.isArray(payload.nodeInfoList) ? payload.nodeInfoList : []
+    };
+  }
+  async function getWebappCallDemo(apiKey, webappId, signal) {
     const query = new URLSearchParams({ apiKey, webappId });
     const response = await fetch(
       `${RUNNINGHUB_BASE}/api/webapp/apiCallDemo?${query}`,
       withSignal({ headers: rhHeaders(apiKey) }, signal)
     );
     const data = await readRunningHubEnvelope(response);
-    return data.data?.nodeInfoList || [];
+    return normalizeWebappCallDemo(data.data);
   }
   async function uploadBlobToRunningHub(apiKey, blob, filename, mimeType = "image/png", signal) {
     const formData = new FormData();
@@ -794,11 +902,16 @@
     const ext = String(output.fileType || "png").replace(/^\./, "") || "png";
     return `runninghub_${Date.now()}_${index}.${ext}`;
   }
-  async function fetchRunningHubOutputBytes(output, signal) {
+  async function fetchRunningHubOutputBytes(output, signal, options = {}) {
     const url = outputUrl(output);
     if (!url) throw new Error("RunningHub output missing fileUrl");
-    const response = await fetch(url, withSignal({}, signal));
-    if (!response.ok) throw new Error(`RunningHub output fetch failed: ${response.status} ${await response.text()}`);
+    const { fetchWithRetry: fetchWithRetry2 } = await Promise.resolve().then(() => (init_fetchRetry(), fetchRetry_exports));
+    const response = await fetchWithRetry2(url, {
+      signal,
+      onRetry: ({ attempt, waitMs }) => {
+        options.onStatus?.(`RunningHub output download failed, retrying (${attempt}) in ${Math.ceil(waitMs / 1e3)}s...`);
+      }
+    });
     return {
       buffer: await response.arrayBuffer(),
       mimeType: response.headers.get("content-type") || "image/png"
@@ -821,6 +934,9 @@
   });
 
   // src/state.js
+  function templateFolderStorageKey(scope) {
+    return scope === "runninghub-wf" ? TEMPLATE_FOLDER_KEY_RH_WF : TEMPLATE_FOLDER_KEY_LOCAL;
+  }
   function byId(id) {
     return document.getElementById(id);
   }
@@ -866,8 +982,10 @@
   }
   function saveSettings() {
     state.settings.serverUrl = els.serverUrlInput.value.trim() || DEFAULT_SERVER;
-    const mode = els.executionModeSelect?.value || "local";
-    state.settings.executionMode = mode === "runninghub-app" || mode === "runninghub-wf" ? mode : "local";
+    state.settings.executionMode = normalizeExecutionMode(state.settings.executionMode);
+    if (els.executionModeSelect) {
+      els.executionModeSelect.value = state.settings.executionMode;
+    }
     const selectedWebapp = els.runningHubAppSelect?.value || DEFAULT_RH_WEBAPP_ID;
     const isDefaultWebapp = RUNNINGHUB_APP_OPTIONS.some((app2) => app2.id === selectedWebapp);
     const webappId = isDefaultWebapp ? selectedWebapp : els.runningHubCustomWebappIdInput?.value.trim() || DEFAULT_RH_WEBAPP_ID;
@@ -883,22 +1001,20 @@
   function normalizeId(id) {
     return Array.isArray(id) ? id.join("|") : String(id);
   }
-  var BUILTIN_TEMPLATES, BUILTIN_RH_TEMPLATES, SETTINGS_KEY, TEMPLATE_FOLDER_KEY, DEFAULT_SERVER, state, els;
+  var BUILTIN_TEMPLATES, BUILTIN_RH_TEMPLATES, SETTINGS_KEY, TEMPLATE_FOLDER_KEY, TEMPLATE_FOLDER_KEY_LOCAL, TEMPLATE_FOLDER_KEY_RH_WF, DEFAULT_SERVER, state, els;
   var init_state = __esm({
     "src/state.js"() {
       init_runninghub();
       BUILTIN_TEMPLATES = [
-        "klein-edit-image",
-        "fashion-flatlay",
-        "mask-upscale",
-        "test-2output",
-        "upscale-klein"
+        "klein-edit-image"
       ];
       BUILTIN_RH_TEMPLATES = [
         "klein-edit-image-lora"
       ];
       SETTINGS_KEY = "apix-builder:settings:v1";
       TEMPLATE_FOLDER_KEY = "apix-builder:template-folder:v1";
+      TEMPLATE_FOLDER_KEY_LOCAL = "apix-builder:template-folder:local:v1";
+      TEMPLATE_FOLDER_KEY_RH_WF = "apix-builder:template-folder:runninghub-wf:v1";
       DEFAULT_SERVER = "http://127.0.0.1:8188";
       state = {
         settings: {
@@ -917,6 +1033,7 @@
         imagePreviews: {},
         serverChoices: {},
         runningHubNodes: [],
+        runningHubWebappName: "",
         runningHubNodeValues: {},
         runningHubNodesLoading: false,
         runningHubNodesError: "",
@@ -1241,6 +1358,54 @@
   // src/services/workflow.js
   init_state();
   init_comfy();
+
+  // src/lib/menuChoices.js
+  function parseMenuChoice(choice, options = {}) {
+    const raw = String(choice ?? "").trim();
+    if (!raw) return null;
+    if (options.labelSyntax !== true) {
+      return { label: raw, value: raw, raw };
+    }
+    const colonIndex = raw.indexOf(":");
+    if (colonIndex > 0) {
+      const label = raw.slice(0, colonIndex).trim();
+      const value = raw.slice(colonIndex + 1).trim();
+      if (label && value) return { label, value, raw };
+    }
+    return { label: raw, value: raw, raw };
+  }
+  function parseMenuChoices(choices = [], options = {}) {
+    return (Array.isArray(choices) ? choices : []).map((choice) => parseMenuChoice(choice, options)).filter(Boolean);
+  }
+  function menuLabelSyntaxEnabled(source) {
+    if (typeof source === "boolean") return source;
+    return source?.menuLabelSyntax === true;
+  }
+  function menuChoiceOptions(source) {
+    return { labelSyntax: menuLabelSyntaxEnabled(source) };
+  }
+  function resolveMenuStoredValue(storedValue, choices = [], options = {}) {
+    const parsed = parseMenuChoices(choices, options);
+    if (!parsed.length) return storedValue ?? "";
+    if (storedValue == null || storedValue === "") return parsed[0].value;
+    if (parsed.some((item) => item.value === storedValue)) return storedValue;
+    const byRaw = parsed.find((item) => item.raw === storedValue);
+    if (byRaw) return byRaw.value;
+    const byLabel = parsed.find((item) => item.label === storedValue);
+    if (byLabel) return byLabel.value;
+    return storedValue;
+  }
+  function lookupMenuSubFields(sub = {}, menuValue, choices = [], options = {}) {
+    if (!sub || typeof sub !== "object") return {};
+    if (sub[menuValue]) return sub[menuValue];
+    const parsed = parseMenuChoices(choices, options);
+    const match = parsed.find((item) => item.value === menuValue || item.raw === menuValue);
+    if (match?.value && sub[match.value]) return sub[match.value];
+    if (match?.raw && sub[match.raw]) return sub[match.raw];
+    return {};
+  }
+
+  // src/services/workflow.js
   function flattenInputs(input = {}) {
     const items = [];
     for (const [key, item] of Object.entries(input)) {
@@ -1265,33 +1430,34 @@
     return menuSubSelectionStorageKey(item.key);
   }
   function getMenuSubOptions(item) {
-    const choices = item?.ui?.choices;
-    const sub = item?.ui?.sub;
+    const ui = item?.ui || {};
+    const choices = ui.choices;
+    const sub = ui.sub;
+    const options = menuChoiceOptions(ui);
     if (Array.isArray(choices)) {
-      return choices.map((choice) => {
-        if (choice && typeof choice === "object") {
-          const value = choice.value ?? choice.id ?? choice.label ?? "";
-          return {
-            value: String(value),
-            label: String(choice.label ?? value)
-          };
-        }
-        return { value: String(choice), label: String(choice) };
-      });
+      return parseMenuChoices(choices, options).map((choice) => ({
+        value: choice.value,
+        label: choice.label
+      }));
     }
     const source = choices && typeof choices === "object" ? choices : sub && typeof sub === "object" ? sub : {};
     return Object.keys(source).map((value) => ({ value, label: value }));
   }
   function menuSubFields(item, selected) {
     const ui = item?.ui || {};
-    if (ui.sub && typeof ui.sub === "object") return ui.sub[selected] || {};
+    const options = menuChoiceOptions(ui);
+    if (ui.sub && typeof ui.sub === "object") {
+      return lookupMenuSubFields(ui.sub, selected, ui.choices, options);
+    }
     if (ui.choices && !Array.isArray(ui.choices) && typeof ui.choices === "object") {
       const choice = ui.choices[selected];
       return choice?.sub || choice?.inputs || choice?.fields || choice || {};
     }
     if (Array.isArray(ui.choices)) {
+      const parsed = parseMenuChoices(ui.choices, options);
+      const match = parsed.find((entry) => entry.value === selected || entry.raw === selected);
       const choice = ui.choices.find((entry) => entry && typeof entry === "object" && String(entry.value ?? entry.id ?? entry.label ?? "") === selected);
-      return choice?.sub || choice?.inputs || choice?.fields || {};
+      return match ? choice?.sub || choice?.inputs || choice?.fields || {} : choice?.sub || choice?.inputs || choice?.fields || {};
     }
     return {};
   }
@@ -1332,12 +1498,19 @@
   function defaultValue(item) {
     const ui = item.ui || {};
     const type = String(ui.type || "").toLowerCase();
-    if (type === "menu-sub") return String(ui.value ?? getMenuSubOptions(item)[0]?.value ?? "");
+    if (type === "menu-sub") {
+      const options = menuChoiceOptions(ui);
+      return resolveMenuStoredValue(ui.value ?? getMenuSubOptions(item)[0]?.value, ui.choices, options);
+    }
     if (type === "seed") return "random_seed";
     if (type === "checkbox") return Boolean(ui.value);
     if (type === "boolean") return ui.value === true || ui.value === "true";
     if (type === "number" || type === "int" || type === "float" || type === "slider") return ui.value ?? ui.minimum ?? 0;
-    if (type === "dropdown" || type === "menu" || type === "radio") return ui.value ?? ui.choices?.[0] ?? "";
+    if (type === "dropdown" || type === "menu" || type === "radio") {
+      const options = menuChoiceOptions(ui);
+      const resolved = resolveMenuStoredValue(ui.value, ui.choices, options);
+      return resolved || parseMenuChoices(ui.choices, options)[0]?.value || "";
+    }
     if (type === "colorpicker") return ui.value || "#10b981";
     if (type === "date") return ui.value || "";
     if (type === "json") return ui.value || "{}";
@@ -1730,7 +1903,9 @@
     const select = document.createElement("select");
     const serverType = canonicalDynamicType(type);
     const serverChoices = serverType ? state.serverChoices[serverType] : null;
-    const choices = serverChoices?.length ? serverChoices : ui.choices?.length ? ui.choices : [ui.value || ""].filter(Boolean);
+    const menuOptions = menuChoiceOptions(ui);
+    const parsedChoices = Array.isArray(ui.choices) ? parseMenuChoices(ui.choices, menuOptions) : [];
+    const choices = serverChoices?.length ? serverChoices.map((value) => ({ value, label: value })) : parsedChoices.length ? parsedChoices : Array.isArray(ui.choices) ? ui.choices.map((value) => ({ value: String(value), label: String(value) })) : ui.value ? [{ value: String(ui.value), label: String(ui.value) }] : [];
     if (serverType && !choices.length) {
       const opt = document.createElement("option");
       opt.value = "";
@@ -1739,12 +1914,13 @@
     }
     for (const choice of choices) {
       const option = document.createElement("option");
-      option.value = choice;
-      option.textContent = choice;
+      option.value = choice.value;
+      option.textContent = choice.label;
       select.append(option);
     }
-    select.value = state.values[key] ?? choices[0] ?? "";
-    if (select.value !== state.values[key]) state.values[key] = select.value;
+    const stored = resolveMenuStoredValue(state.values[key] ?? ui.value, ui.choices, menuOptions);
+    select.value = stored || choices[0]?.value || "";
+    state.values[key] = select.value;
     select.addEventListener("change", () => {
       state.values[key] = select.value;
     });
@@ -1757,23 +1933,26 @@
   function renderRadioField(key, ui) {
     const wrap = document.createElement("div");
     wrap.className = "radioGroup";
-    const choices = ui.choices || [];
-    for (const choice of choices) {
+    const menuOptions = menuChoiceOptions(ui);
+    const parsedChoices = parseMenuChoices(ui.choices || [], menuOptions);
+    const stored = resolveMenuStoredValue(state.values[key] ?? ui.value, ui.choices, menuOptions);
+    for (const choice of parsedChoices) {
       const radioLabel = document.createElement("label");
       radioLabel.className = "radioItem";
       const input = document.createElement("input");
       input.type = "radio";
       input.name = `radio-${key}`;
-      input.value = choice;
-      input.checked = (state.values[key] ?? choices[0]) === choice;
+      input.value = choice.value;
+      input.checked = stored === choice.value;
       input.addEventListener("change", () => {
-        if (input.checked) state.values[key] = choice;
+        if (input.checked) state.values[key] = choice.value;
       });
       const span = document.createElement("span");
-      span.textContent = choice;
+      span.textContent = choice.label;
       radioLabel.append(input, span);
       wrap.append(radioLabel);
     }
+    state.values[key] = stored || parsedChoices[0]?.value || "";
     return wrap;
   }
   function renderBooleanField(key) {
@@ -1838,10 +2017,83 @@
     return wrap;
   }
 
+  // src/ui/icons.js
+  var ICONS = {
+    check: "\u2713",
+    chevronUp: "\u25B2",
+    chevronDown: "\u25BC",
+    refresh: "\u21BB",
+    reveal: "\u25CB",
+    conceal: "\u25CF"
+  };
+  function setButtonIcon(button, name, label) {
+    if (!button) return;
+    button.textContent = ICONS[name] || "";
+    if (label) {
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }
+  }
+  function syncSecretToggleButton(button, input, labels = {}) {
+    if (!button || !input) return;
+    const hidden = input.type === "password";
+    const showLabel = labels.show || "Show";
+    const hideLabel = labels.hide || "Hide";
+    setButtonIcon(button, hidden ? "reveal" : "conceal", hidden ? showLabel : hideLabel);
+  }
+  function setSettingsToggleIcon(button, collapsed) {
+    setButtonIcon(
+      button,
+      collapsed ? "chevronDown" : "chevronUp",
+      collapsed ? "Show settings" : "Hide settings"
+    );
+  }
+
   // src/main.js
   init_runninghub();
 
-  // node_modules/yaml/browser/dist/index.js
+  // src/lib/templateFolder.js
+  var TEMPLATE_MANIFEST_FILES = ["app_build.yaml", "app_build.json"];
+  var TEMPLATE_BUCKET_NAMES = /* @__PURE__ */ new Set(["default", "templates", "default-rh", "templates-rh"]);
+  var MAX_TEMPLATE_SCAN_DEPTH = 2;
+  function isTemplateBucketName(name) {
+    return TEMPLATE_BUCKET_NAMES.has(String(name || "").trim());
+  }
+  function isFolderEntry(entry) {
+    return Boolean(entry && (entry.isFolder || entry.isDirectory || typeof entry.getEntries === "function"));
+  }
+  function filterFolderEntries(entries = []) {
+    if (!Array.isArray(entries)) return [];
+    return entries.filter((entry) => isFolderEntry(entry));
+  }
+  function pickTemplateScanTargets(rootFolderName, childEntries = []) {
+    const folders = filterFolderEntries(childEntries);
+    if (isTemplateBucketName(rootFolderName)) {
+      return folders;
+    }
+    const buckets = folders.filter((entry) => isTemplateBucketName(entry.name));
+    if (buckets.length > 0) {
+      return buckets;
+    }
+    const configFolder = folders.find((entry) => entry.name === "config");
+    if (configFolder) {
+      return [configFolder];
+    }
+    return folders;
+  }
+  function shouldRecurseIntoScanTarget(folderName, depth) {
+    if (depth >= MAX_TEMPLATE_SCAN_DEPTH) return false;
+    return isTemplateBucketName(folderName) || folderName === "config";
+  }
+  function templateFolderId(prefix, folderName) {
+    return prefix ? `folder:${prefix}${folderName}` : `folder:${folderName}`;
+  }
+  function templateDisplayName(config, folderName, prefix = "") {
+    const base = config?.app?.name || folderName;
+    return prefix ? `${base} (${prefix.replace(/\/$/, "")})` : base;
+  }
+
+  // ../node_modules/yaml/browser/dist/index.js
   var dist_exports = {};
   __export(dist_exports, {
     Alias: () => Alias,
@@ -1875,14 +2127,14 @@
     visitAsync: () => visitAsync
   });
 
-  // node_modules/yaml/browser/dist/nodes/identity.js
-  var ALIAS = Symbol.for("yaml.alias");
-  var DOC = Symbol.for("yaml.document");
-  var MAP = Symbol.for("yaml.map");
-  var PAIR = Symbol.for("yaml.pair");
-  var SCALAR = Symbol.for("yaml.scalar");
-  var SEQ = Symbol.for("yaml.seq");
-  var NODE_TYPE = Symbol.for("yaml.node.type");
+  // ../node_modules/yaml/browser/dist/nodes/identity.js
+  var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
+  var DOC = /* @__PURE__ */ Symbol.for("yaml.document");
+  var MAP = /* @__PURE__ */ Symbol.for("yaml.map");
+  var PAIR = /* @__PURE__ */ Symbol.for("yaml.pair");
+  var SCALAR = /* @__PURE__ */ Symbol.for("yaml.scalar");
+  var SEQ = /* @__PURE__ */ Symbol.for("yaml.seq");
+  var NODE_TYPE = /* @__PURE__ */ Symbol.for("yaml.node.type");
   var isAlias = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === ALIAS;
   var isDocument = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === DOC;
   var isMap = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
@@ -1911,10 +2163,10 @@
   }
   var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
 
-  // node_modules/yaml/browser/dist/visit.js
-  var BREAK = Symbol("break visit");
-  var SKIP = Symbol("skip children");
-  var REMOVE = Symbol("remove node");
+  // ../node_modules/yaml/browser/dist/visit.js
+  var BREAK = /* @__PURE__ */ Symbol("break visit");
+  var SKIP = /* @__PURE__ */ Symbol("skip children");
+  var REMOVE = /* @__PURE__ */ Symbol("remove node");
   function visit(node, visitor) {
     const visitor_ = initVisitor(visitor);
     if (isDocument(node)) {
@@ -2061,7 +2313,7 @@
     }
   }
 
-  // node_modules/yaml/browser/dist/doc/directives.js
+  // ../node_modules/yaml/browser/dist/doc/directives.js
   var escapeChars = {
     "!": "%21",
     ",": "%2C",
@@ -2224,7 +2476,7 @@
   Directives.defaultYaml = { explicit: false, version: "1.2" };
   Directives.defaultTags = { "!!": "tag:yaml.org,2002:" };
 
-  // node_modules/yaml/browser/dist/doc/anchors.js
+  // ../node_modules/yaml/browser/dist/doc/anchors.js
   function anchorIsValid(anchor) {
     if (/[\x00-\x19\s,[\]{}]/.test(anchor)) {
       const sa = JSON.stringify(anchor);
@@ -2283,7 +2535,7 @@
     };
   }
 
-  // node_modules/yaml/browser/dist/doc/applyReviver.js
+  // ../node_modules/yaml/browser/dist/doc/applyReviver.js
   function applyReviver(reviver, obj, key, val) {
     if (val && typeof val === "object") {
       if (Array.isArray(val)) {
@@ -2327,7 +2579,7 @@
     return reviver.call(obj, key, val);
   }
 
-  // node_modules/yaml/browser/dist/nodes/toJS.js
+  // ../node_modules/yaml/browser/dist/nodes/toJS.js
   function toJS(value, arg, ctx) {
     if (Array.isArray(value))
       return value.map((v, i) => toJS(v, String(i), ctx));
@@ -2350,7 +2602,7 @@
     return value;
   }
 
-  // node_modules/yaml/browser/dist/nodes/Node.js
+  // ../node_modules/yaml/browser/dist/nodes/Node.js
   var NodeBase = class {
     constructor(type) {
       Object.defineProperty(this, NODE_TYPE, { value: type });
@@ -2382,7 +2634,7 @@
     }
   };
 
-  // node_modules/yaml/browser/dist/nodes/Alias.js
+  // ../node_modules/yaml/browser/dist/nodes/Alias.js
   var Alias = class extends NodeBase {
     constructor(source) {
       super(ALIAS);
@@ -2487,7 +2739,7 @@
     return 1;
   }
 
-  // node_modules/yaml/browser/dist/nodes/Scalar.js
+  // ../node_modules/yaml/browser/dist/nodes/Scalar.js
   var isScalarValue = (value) => !value || typeof value !== "function" && typeof value !== "object";
   var Scalar = class extends NodeBase {
     constructor(value) {
@@ -2507,7 +2759,7 @@
   Scalar.QUOTE_DOUBLE = "QUOTE_DOUBLE";
   Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
 
-  // node_modules/yaml/browser/dist/doc/createNode.js
+  // ../node_modules/yaml/browser/dist/doc/createNode.js
   var defaultTagPrefix = "tag:yaml.org,2002:";
   function findTagObject(value, tagName, tags) {
     if (tagName) {
@@ -2573,7 +2825,7 @@
     return node;
   }
 
-  // node_modules/yaml/browser/dist/nodes/Collection.js
+  // ../node_modules/yaml/browser/dist/nodes/Collection.js
   function collectionFromPath(schema4, path, value) {
     let v = value;
     for (let i = path.length - 1; i >= 0; --i) {
@@ -2705,7 +2957,7 @@
     }
   };
 
-  // node_modules/yaml/browser/dist/stringify/stringifyComment.js
+  // ../node_modules/yaml/browser/dist/stringify/stringifyComment.js
   var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
   function indentComment(comment, indent) {
     if (/^\n+$/.test(comment))
@@ -2714,7 +2966,7 @@
   }
   var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
 
-  // node_modules/yaml/browser/dist/stringify/foldFlowLines.js
+  // ../node_modules/yaml/browser/dist/stringify/foldFlowLines.js
   var FOLD_FLOW = "flow";
   var FOLD_BLOCK = "block";
   var FOLD_QUOTED = "quoted";
@@ -2841,7 +3093,7 @@ ${indent}${text.slice(fold + 1, end2)}`;
     return end;
   }
 
-  // node_modules/yaml/browser/dist/stringify/stringifyString.js
+  // ../node_modules/yaml/browser/dist/stringify/stringifyString.js
   var getFoldOptions = (ctx, isBlock2) => ({
     indentAtStart: isBlock2 ? ctx.indent.length : ctx.indentAtStart,
     lineWidth: ctx.options.lineWidth,
@@ -3116,7 +3368,7 @@ ${indent}`);
     return res;
   }
 
-  // node_modules/yaml/browser/dist/stringify/stringify.js
+  // ../node_modules/yaml/browser/dist/stringify/stringify.js
   function createStringifyContext(doc, options) {
     const opt = Object.assign({
       blockQuote: true,
@@ -3229,7 +3481,7 @@ ${indent}`);
 ${ctx.indent}${str}`;
   }
 
-  // node_modules/yaml/browser/dist/stringify/stringifyPair.js
+  // ../node_modules/yaml/browser/dist/stringify/stringifyPair.js
   function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
     const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
     let keyComment = isNode(key) && key.comment || null;
@@ -3352,14 +3604,14 @@ ${ctx.indent}`;
     return str;
   }
 
-  // node_modules/yaml/browser/dist/log.js
+  // ../node_modules/yaml/browser/dist/log.js
   function warn(logLevel, warning) {
     if (logLevel === "debug" || logLevel === "warn") {
       console.warn(warning);
     }
   }
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
   var MERGE_KEY = "<<";
   var merge = {
     identify: (value) => value === MERGE_KEY || typeof value === "symbol" && value.description === MERGE_KEY,
@@ -3409,7 +3661,7 @@ ${ctx.indent}`;
     return ctx && isAlias(value) ? value.resolve(ctx.doc, ctx) : value;
   }
 
-  // node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
+  // ../node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
   function addPairToJSMap(ctx, map2, { key, value }) {
     if (isNode(key) && key.addToJSMap)
       key.addToJSMap(ctx, map2, value);
@@ -3462,7 +3714,7 @@ ${ctx.indent}`;
     return JSON.stringify(jsKey);
   }
 
-  // node_modules/yaml/browser/dist/nodes/Pair.js
+  // ../node_modules/yaml/browser/dist/nodes/Pair.js
   function createPair(key, value, ctx) {
     const k = createNode(key, void 0, ctx);
     const v = createNode(value, void 0, ctx);
@@ -3491,7 +3743,7 @@ ${ctx.indent}`;
     }
   };
 
-  // node_modules/yaml/browser/dist/stringify/stringifyCollection.js
+  // ../node_modules/yaml/browser/dist/stringify/stringifyCollection.js
   function stringifyCollection(collection, ctx, options) {
     const flow = ctx.inFlow ?? collection.flow;
     const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
@@ -3633,7 +3885,7 @@ ${indent}${end}`;
     }
   }
 
-  // node_modules/yaml/browser/dist/nodes/YAMLMap.js
+  // ../node_modules/yaml/browser/dist/nodes/YAMLMap.js
   function findPair(items, key) {
     const k = isScalar(key) ? key.value : key;
     for (const it of items) {
@@ -3764,7 +4016,7 @@ ${indent}${end}`;
     }
   };
 
-  // node_modules/yaml/browser/dist/schema/common/map.js
+  // ../node_modules/yaml/browser/dist/schema/common/map.js
   var map = {
     collection: "map",
     default: true,
@@ -3778,7 +4030,7 @@ ${indent}${end}`;
     createNode: (schema4, obj, ctx) => YAMLMap.from(schema4, obj, ctx)
   };
 
-  // node_modules/yaml/browser/dist/nodes/YAMLSeq.js
+  // ../node_modules/yaml/browser/dist/nodes/YAMLSeq.js
   var YAMLSeq = class extends Collection {
     static get tagName() {
       return "tag:yaml.org,2002:seq";
@@ -3882,7 +4134,7 @@ ${indent}${end}`;
     return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
   }
 
-  // node_modules/yaml/browser/dist/schema/common/seq.js
+  // ../node_modules/yaml/browser/dist/schema/common/seq.js
   var seq = {
     collection: "seq",
     default: true,
@@ -3896,7 +4148,7 @@ ${indent}${end}`;
     createNode: (schema4, obj, ctx) => YAMLSeq.from(schema4, obj, ctx)
   };
 
-  // node_modules/yaml/browser/dist/schema/common/string.js
+  // ../node_modules/yaml/browser/dist/schema/common/string.js
   var string = {
     identify: (value) => typeof value === "string",
     default: true,
@@ -3908,7 +4160,7 @@ ${indent}${end}`;
     }
   };
 
-  // node_modules/yaml/browser/dist/schema/common/null.js
+  // ../node_modules/yaml/browser/dist/schema/common/null.js
   var nullTag = {
     identify: (value) => value == null,
     createNode: () => new Scalar(null),
@@ -3919,7 +4171,7 @@ ${indent}${end}`;
     stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
   };
 
-  // node_modules/yaml/browser/dist/schema/core/bool.js
+  // ../node_modules/yaml/browser/dist/schema/core/bool.js
   var boolTag = {
     identify: (value) => typeof value === "boolean",
     default: true,
@@ -3936,7 +4188,7 @@ ${indent}${end}`;
     }
   };
 
-  // node_modules/yaml/browser/dist/stringify/stringifyNumber.js
+  // ../node_modules/yaml/browser/dist/stringify/stringifyNumber.js
   function stringifyNumber({ format, minFractionDigits, tag, value }) {
     if (typeof value === "bigint")
       return String(value);
@@ -3957,7 +4209,7 @@ ${indent}${end}`;
     return n;
   }
 
-  // node_modules/yaml/browser/dist/schema/core/float.js
+  // ../node_modules/yaml/browser/dist/schema/core/float.js
   var floatNaN = {
     identify: (value) => typeof value === "number",
     default: true,
@@ -3993,7 +4245,7 @@ ${indent}${end}`;
     stringify: stringifyNumber
   };
 
-  // node_modules/yaml/browser/dist/schema/core/int.js
+  // ../node_modules/yaml/browser/dist/schema/core/int.js
   var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
   var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
   function intStringify(node, radix, prefix) {
@@ -4029,7 +4281,7 @@ ${indent}${end}`;
     stringify: (node) => intStringify(node, 16, "0x")
   };
 
-  // node_modules/yaml/browser/dist/schema/core/schema.js
+  // ../node_modules/yaml/browser/dist/schema/core/schema.js
   var schema = [
     map,
     seq,
@@ -4044,7 +4296,7 @@ ${indent}${end}`;
     float
   ];
 
-  // node_modules/yaml/browser/dist/schema/json/schema.js
+  // ../node_modules/yaml/browser/dist/schema/json/schema.js
   function intIdentify2(value) {
     return typeof value === "bigint" || Number.isInteger(value);
   }
@@ -4102,7 +4354,7 @@ ${indent}${end}`;
   };
   var schema2 = [map, seq].concat(jsonScalars, jsonError);
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
   var binary = {
     identify: (value) => value instanceof Uint8Array,
     // Buffer inherits from Uint8Array
@@ -4155,7 +4407,7 @@ ${indent}${end}`;
     }
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
   function resolvePairs(seq2, onError) {
     if (isSeq(seq2)) {
       for (let i = 0; i < seq2.items.length; ++i) {
@@ -4221,7 +4473,7 @@ ${cn.comment}` : item.comment;
     createNode: createPairs
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
   var YAMLOMap = class _YAMLOMap extends YAMLSeq {
     constructor() {
       super();
@@ -4287,7 +4539,7 @@ ${cn.comment}` : item.comment;
     createNode: (schema4, iterable, ctx) => YAMLOMap.from(schema4, iterable, ctx)
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
   function boolStringify({ value, source }, ctx) {
     const boolObj = value ? trueTag : falseTag;
     if (source && boolObj.test.test(source))
@@ -4311,7 +4563,7 @@ ${cn.comment}` : item.comment;
     stringify: boolStringify
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
   var floatNaN2 = {
     identify: (value) => typeof value === "number",
     default: true,
@@ -4350,7 +4602,7 @@ ${cn.comment}` : item.comment;
     stringify: stringifyNumber
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
   var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
   function intResolve2(str, offset, radix, { intAsBigInt }) {
     const sign = str[0];
@@ -4419,7 +4671,7 @@ ${cn.comment}` : item.comment;
     stringify: (node) => intStringify2(node, 16, "0x")
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
   var YAMLSet = class _YAMLSet extends YAMLMap {
     constructor(schema4) {
       super(schema4);
@@ -4498,7 +4750,7 @@ ${cn.comment}` : item.comment;
     }
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
   function parseSexagesimal(str, asBigInt) {
     const sign = str[0];
     const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
@@ -4577,7 +4829,7 @@ ${cn.comment}` : item.comment;
     stringify: ({ value }) => value?.toISOString().replace(/(T00:00:00)?\.000Z$/, "") ?? ""
   };
 
-  // node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
+  // ../node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
   var schema3 = [
     map,
     seq,
@@ -4602,7 +4854,7 @@ ${cn.comment}` : item.comment;
     timestamp
   ];
 
-  // node_modules/yaml/browser/dist/schema/tags.js
+  // ../node_modules/yaml/browser/dist/schema/tags.js
   var schemas = /* @__PURE__ */ new Map([
     ["core", schema],
     ["failsafe", [map, seq, string]],
@@ -4673,7 +4925,7 @@ ${cn.comment}` : item.comment;
     }, []);
   }
 
-  // node_modules/yaml/browser/dist/schema/Schema.js
+  // ../node_modules/yaml/browser/dist/schema/Schema.js
   var sortMapEntriesByKey = (a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   var Schema = class _Schema {
     constructor({ compat, customTags, merge: merge2, resolveKnownTags, schema: schema4, sortMapEntries, toStringDefaults }) {
@@ -4694,7 +4946,7 @@ ${cn.comment}` : item.comment;
     }
   };
 
-  // node_modules/yaml/browser/dist/stringify/stringifyDocument.js
+  // ../node_modules/yaml/browser/dist/stringify/stringifyDocument.js
   function stringifyDocument(doc, options) {
     const lines = [];
     let hasDirectives = options.directives === true;
@@ -4765,7 +5017,7 @@ ${cn.comment}` : item.comment;
     return lines.join("\n") + "\n";
   }
 
-  // node_modules/yaml/browser/dist/doc/Document.js
+  // ../node_modules/yaml/browser/dist/doc/Document.js
   var Document = class _Document {
     constructor(value, replacer, options) {
       this.commentBefore = null;
@@ -5057,7 +5309,7 @@ ${cn.comment}` : item.comment;
     throw new Error("Expected a YAML collection as document contents");
   }
 
-  // node_modules/yaml/browser/dist/errors.js
+  // ../node_modules/yaml/browser/dist/errors.js
   var YAMLError = class extends Error {
     constructor(name, pos, code, message) {
       super();
@@ -5113,7 +5365,7 @@ ${pointer}
     }
   };
 
-  // node_modules/yaml/browser/dist/compose/resolve-props.js
+  // ../node_modules/yaml/browser/dist/compose/resolve-props.js
   function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
     let spaceBefore = false;
     let atNewline = startOnNewline;
@@ -5241,7 +5493,7 @@ ${pointer}
     };
   }
 
-  // node_modules/yaml/browser/dist/compose/util-contains-newline.js
+  // ../node_modules/yaml/browser/dist/compose/util-contains-newline.js
   function containsNewline(key) {
     if (!key)
       return null;
@@ -5277,7 +5529,7 @@ ${pointer}
     }
   }
 
-  // node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
+  // ../node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
   function flowIndentCheck(indent, fc, onError) {
     if (fc?.type === "flow-collection") {
       const end = fc.end[0];
@@ -5288,7 +5540,7 @@ ${pointer}
     }
   }
 
-  // node_modules/yaml/browser/dist/compose/util-map-includes.js
+  // ../node_modules/yaml/browser/dist/compose/util-map-includes.js
   function mapIncludes(ctx, items, search) {
     const { uniqueKeys } = ctx.options;
     if (uniqueKeys === false)
@@ -5297,7 +5549,7 @@ ${pointer}
     return items.some((pair) => isEqual(pair.key, search));
   }
 
-  // node_modules/yaml/browser/dist/compose/resolve-block-map.js
+  // ../node_modules/yaml/browser/dist/compose/resolve-block-map.js
   var startColMsg = "All mapping items must start at the same column";
   function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bm, onError, tag) {
     const NodeClass = tag?.nodeClass ?? YAMLMap;
@@ -5393,7 +5645,7 @@ ${pointer}
     return map2;
   }
 
-  // node_modules/yaml/browser/dist/compose/resolve-block-seq.js
+  // ../node_modules/yaml/browser/dist/compose/resolve-block-seq.js
   function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bs, onError, tag) {
     const NodeClass = tag?.nodeClass ?? YAMLSeq;
     const seq2 = new NodeClass(ctx.schema);
@@ -5435,7 +5687,7 @@ ${pointer}
     return seq2;
   }
 
-  // node_modules/yaml/browser/dist/compose/resolve-end.js
+  // ../node_modules/yaml/browser/dist/compose/resolve-end.js
   function resolveEnd(end, offset, reqSpace, onError) {
     let comment = "";
     if (end) {
@@ -5472,7 +5724,7 @@ ${pointer}
     return { comment, offset };
   }
 
-  // node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
+  // ../node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
   var blockMsg = "Block collections are not allowed within flow collections";
   var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
   function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, fc, onError, tag) {
@@ -5652,7 +5904,7 @@ ${pointer}
     return coll;
   }
 
-  // node_modules/yaml/browser/dist/compose/compose-collection.js
+  // ../node_modules/yaml/browser/dist/compose/compose-collection.js
   function resolveCollection(CN2, ctx, token, onError, tagName, tag) {
     const coll = token.type === "block-map" ? resolveBlockMap(CN2, ctx, token, onError, tag) : token.type === "block-seq" ? resolveBlockSeq(CN2, ctx, token, onError, tag) : resolveFlowCollection(CN2, ctx, token, onError, tag);
     const Coll = coll.constructor;
@@ -5704,7 +5956,7 @@ ${pointer}
     return node;
   }
 
-  // node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
+  // ../node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
   function resolveBlockScalar(ctx, scalar, onError) {
     const start = scalar.offset;
     const header = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
@@ -5880,7 +6132,7 @@ ${pointer}
     return lines;
   }
 
-  // node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
+  // ../node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
   function resolveFlowScalar(scalar, strict, onError) {
     const { offset, type, source, end } = scalar;
     let _type;
@@ -6092,7 +6344,7 @@ ${pointer}
     }
   }
 
-  // node_modules/yaml/browser/dist/compose/compose-scalar.js
+  // ../node_modules/yaml/browser/dist/compose/compose-scalar.js
   function composeScalar(ctx, token, tagToken, onError) {
     const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
     const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
@@ -6163,7 +6415,7 @@ ${pointer}
     return tag;
   }
 
-  // node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
+  // ../node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
   function emptyScalarPosition(offset, before, pos) {
     if (before) {
       pos ?? (pos = before.length);
@@ -6187,7 +6439,7 @@ ${pointer}
     return offset;
   }
 
-  // node_modules/yaml/browser/dist/compose/compose-node.js
+  // ../node_modules/yaml/browser/dist/compose/compose-node.js
   var CN = { composeNode, composeEmptyNode };
   function composeNode(ctx, token, props, onError) {
     const atKey = ctx.atKey;
@@ -6280,7 +6532,7 @@ ${pointer}
     return alias;
   }
 
-  // node_modules/yaml/browser/dist/compose/compose-doc.js
+  // ../node_modules/yaml/browser/dist/compose/compose-doc.js
   function composeDoc(options, directives, { offset, start, value, end }, onError) {
     const opts = Object.assign({ _directives: directives }, options);
     const doc = new Document(void 0, opts);
@@ -6313,7 +6565,7 @@ ${pointer}
     return doc;
   }
 
-  // node_modules/yaml/browser/dist/compose/composer.js
+  // ../node_modules/yaml/browser/dist/compose/composer.js
   function getErrorPos(src) {
     if (typeof src === "number")
       return [src, src + 1];
@@ -6506,7 +6758,7 @@ ${end.comment}` : end.comment;
     }
   };
 
-  // node_modules/yaml/browser/dist/parse/cst.js
+  // ../node_modules/yaml/browser/dist/parse/cst.js
   var cst_exports = {};
   __export(cst_exports, {
     BOM: () => BOM,
@@ -6524,7 +6776,7 @@ ${end.comment}` : end.comment;
     visit: () => visit2
   });
 
-  // node_modules/yaml/browser/dist/parse/cst-scalar.js
+  // ../node_modules/yaml/browser/dist/parse/cst-scalar.js
   function resolveAsScalar(token, strict = true, onError) {
     if (token) {
       const _onError = (pos, code, message) => {
@@ -6697,7 +6949,7 @@ ${end.comment}` : end.comment;
     }
   }
 
-  // node_modules/yaml/browser/dist/parse/cst-stringify.js
+  // ../node_modules/yaml/browser/dist/parse/cst-stringify.js
   var stringify2 = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
   function stringifyToken(token) {
     switch (token.type) {
@@ -6752,10 +7004,10 @@ ${end.comment}` : end.comment;
     return res;
   }
 
-  // node_modules/yaml/browser/dist/parse/cst-visit.js
-  var BREAK2 = Symbol("break visit");
-  var SKIP2 = Symbol("skip children");
-  var REMOVE2 = Symbol("remove item");
+  // ../node_modules/yaml/browser/dist/parse/cst-visit.js
+  var BREAK2 = /* @__PURE__ */ Symbol("break visit");
+  var SKIP2 = /* @__PURE__ */ Symbol("skip children");
+  var REMOVE2 = /* @__PURE__ */ Symbol("remove item");
   function visit2(cst, visitor) {
     if ("type" in cst && cst.type === "document")
       cst = { start: cst.start, value: cst.value };
@@ -6808,7 +7060,7 @@ ${end.comment}` : end.comment;
     return typeof ctrl === "function" ? ctrl(item, path) : ctrl;
   }
 
-  // node_modules/yaml/browser/dist/parse/cst.js
+  // ../node_modules/yaml/browser/dist/parse/cst.js
   var BOM = "\uFEFF";
   var DOCUMENT = "";
   var FLOW_END = "";
@@ -6889,7 +7141,7 @@ ${end.comment}` : end.comment;
     return null;
   }
 
-  // node_modules/yaml/browser/dist/parse/lexer.js
+  // ../node_modules/yaml/browser/dist/parse/lexer.js
   function isEmpty(ch) {
     switch (ch) {
       case void 0:
@@ -7471,7 +7723,7 @@ ${end.comment}` : end.comment;
     }
   };
 
-  // node_modules/yaml/browser/dist/parse/line-counter.js
+  // ../node_modules/yaml/browser/dist/parse/line-counter.js
   var LineCounter = class {
     constructor() {
       this.lineStarts = [];
@@ -7496,7 +7748,7 @@ ${end.comment}` : end.comment;
     }
   };
 
-  // node_modules/yaml/browser/dist/parse/parser.js
+  // ../node_modules/yaml/browser/dist/parse/parser.js
   function includesToken(list, type) {
     for (let i = 0; i < list.length; ++i)
       if (list[i].type === type)
@@ -8359,7 +8611,7 @@ ${end.comment}` : end.comment;
     }
   };
 
-  // node_modules/yaml/browser/dist/public-api.js
+  // ../node_modules/yaml/browser/dist/public-api.js
   function parseOptions(options) {
     const prettyErrors = options.prettyErrors !== false;
     const lineCounter = options.lineCounter || prettyErrors && new LineCounter() || null;
@@ -8440,7 +8692,7 @@ ${end.comment}` : end.comment;
     return new Document(value, _replacer, options).toString(options);
   }
 
-  // node_modules/yaml/browser/index.js
+  // ../node_modules/yaml/browser/index.js
   var browser_default = dist_exports;
 
   // src/main.js
@@ -8452,10 +8704,10 @@ ${end.comment}` : end.comment;
     return JSON.parse(JSON.stringify(value));
   }
   function currentExecutionMode() {
-    const mode = state.settings.executionMode;
-    if (mode === "runninghub" || mode === "runninghub-app") return "runninghub-app";
-    if (mode === "runninghub-wf") return "runninghub-wf";
-    return "local";
+    return normalizeExecutionMode(state.settings.executionMode);
+  }
+  function modeFromElement(element) {
+    return element?.getAttribute?.("data-mode") || "";
   }
   function isRunningHubAppMode() {
     return currentExecutionMode() === "runninghub-app";
@@ -8468,6 +8720,25 @@ ${end.comment}` : end.comment;
   }
   function currentTemplateScope() {
     return isRunningHubWfMode() ? "runninghub-wf" : "local";
+  }
+  function readTemplateFolderToken(scope = currentTemplateScope()) {
+    const key = templateFolderStorageKey(scope);
+    let token = localStorage.getItem(key);
+    if (!token && scope === "local") {
+      const legacy = localStorage.getItem(TEMPLATE_FOLDER_KEY);
+      if (legacy) {
+        localStorage.setItem(key, legacy);
+        localStorage.removeItem(TEMPLATE_FOLDER_KEY);
+        token = legacy;
+      }
+    }
+    return token;
+  }
+  function saveTemplateFolderToken(scope, token) {
+    localStorage.setItem(templateFolderStorageKey(scope), token);
+  }
+  function clearTemplateFolderToken(scope) {
+    localStorage.removeItem(templateFolderStorageKey(scope));
   }
   function runningHubNodeToInput(node) {
     const fieldType = String(node.fieldType || "").toUpperCase();
@@ -8487,9 +8758,15 @@ ${end.comment}` : end.comment;
       }
     };
   }
+  function runningHubAppDisplayName() {
+    if (state.runningHubWebappName) return state.runningHubWebappName;
+    const webappId = state.settings.runningHub?.webappId?.trim() || DEFAULT_RH_WEBAPP_ID;
+    const preset = RUNNINGHUB_APP_OPTIONS.find((app2) => app2.id === webappId);
+    return preset?.name || "RunningHub Inputs";
+  }
   function renderRunningHubForm() {
     state.values = state.runningHubNodeValues;
-    els.workflowTitle.textContent = "RunningHub Inputs";
+    els.workflowTitle.textContent = runningHubAppDisplayName();
     renderDynamicForm(state.runningHubNodes.map(runningHubNodeToInput));
   }
   function renderLocalForm() {
@@ -8507,6 +8784,26 @@ ${end.comment}` : end.comment;
       els.dynamicForm.innerHTML = "";
       els.workflowTitle.textContent = "Inputs";
     }
+  }
+  function syncExecutionModeUi(mode = currentExecutionMode()) {
+    if (els.executionModeSelect) els.executionModeSelect.value = mode;
+    if (!els.executionModeToggle) return;
+    els.executionModeToggle.querySelectorAll("[data-mode]").forEach((button) => {
+      const active = modeFromElement(button) === mode;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  }
+  function bindExecutionModeTabs() {
+    if (!els.executionModeToggle) return;
+    els.executionModeToggle.querySelectorAll("[data-mode]").forEach((button) => {
+      safeBind(button, "click", () => {
+        const nextMode = modeFromElement(button);
+        if (nextMode && nextMode !== currentExecutionMode()) {
+          switchExecutionMode(nextMode);
+        }
+      }, "mode tab");
+    });
   }
   function syncModeVisibility() {
     const runningHub = isRunningHubMode();
@@ -8539,7 +8836,7 @@ ${end.comment}` : end.comment;
   }
   function applySettingsToUi() {
     els.serverUrlInput.value = state.settings.serverUrl;
-    els.executionModeSelect.value = currentExecutionMode();
+    syncExecutionModeUi(currentExecutionMode());
     els.runningHubApiKeyInput.value = state.settings.runningHub?.apiKey || "";
     const webappId = state.settings.runningHub?.webappId || DEFAULT_RH_WEBAPP_ID;
     const knownApp = RUNNINGHUB_APP_OPTIONS.find((app2) => app2.id === webappId);
@@ -8566,7 +8863,14 @@ ${end.comment}` : end.comment;
     };
   }
   async function readFolderText(folder, name) {
-    const file = await folder.getEntry(name);
+    if (!isFolderEntry(folder)) throw new Error("Folder entry is missing");
+    let file;
+    try {
+      file = await folder.getEntry(name);
+    } catch (error) {
+      throw new Error(`Cannot read ${name}: ${error.message}`);
+    }
+    if (!file) throw new Error(`Missing file: ${name}`);
     return file.read();
   }
   async function readFolderConfig(folder) {
@@ -8604,38 +8908,88 @@ ${end.comment}` : end.comment;
       workflow
     };
   }
-  function isFolderEntry(entry) {
-    return Boolean(entry?.isFolder || entry?.isDirectory || entry?.getEntries);
-  }
   async function folderEntries(folder) {
+    if (!isFolderEntry(folder)) return [];
     try {
-      return await folder.getEntries();
-    } catch {
+      const entries = await folder.getEntries();
+      return filterFolderEntries(Array.isArray(entries) ? entries : []);
+    } catch (error) {
+      console.warn(`Cannot list folder ${folder.name || ""}:`, error);
       return [];
     }
+  }
+  async function folderHasTemplateManifest(folder) {
+    if (!isFolderEntry(folder)) return false;
+    for (const name of TEMPLATE_MANIFEST_FILES) {
+      try {
+        const entry = await folder.getEntry(name);
+        if (entry && entry.isFile !== false) return true;
+      } catch {
+      }
+    }
+    return false;
+  }
+  async function discoverTemplateFolders(rootFolder, depth = 0, prefix = "") {
+    const found = [];
+    if (!isFolderEntry(rootFolder)) return found;
+    if (await folderHasTemplateManifest(rootFolder)) {
+      found.push({ folder: rootFolder, prefix });
+      return found;
+    }
+    if (depth >= MAX_TEMPLATE_SCAN_DEPTH) return found;
+    const targets = pickTemplateScanTargets(rootFolder.name, await folderEntries(rootFolder));
+    for (const entry of targets) {
+      if (await folderHasTemplateManifest(entry)) {
+        found.push({
+          folder: entry,
+          prefix: prefix ? `${prefix}${entry.name}` : entry.name
+        });
+        continue;
+      }
+      if (!shouldRecurseIntoScanTarget(entry.name, depth)) continue;
+      const nested = await discoverTemplateFolders(
+        entry,
+        depth + 1,
+        prefix ? `${prefix}${entry.name}/` : `${entry.name}/`
+      );
+      found.push(...nested);
+    }
+    return found;
+  }
+  async function resolveTemplateWorkflow(template) {
+    if (template.workflow) return template.workflow;
+    const config = template.config;
+    if (!isRunningHubWfTemplate(config)) return null;
+    if (!usesSavedWorkflowJson(config, false)) return null;
+    const workflowId = String(config.runninghub?.workflowId || "").trim();
+    if (!workflowId) return null;
+    const apiKey = state.settings.runningHub?.apiKey?.trim();
+    if (!apiKey) {
+      throw new Error("RunningHub API key required to fetch workflow JSON for this template");
+    }
+    setStatus(`Fetching workflow ${workflowId} from RunningHub...`);
+    return getWorkflowJson(apiKey, workflowId, state.abortController?.signal);
   }
   async function loadFolderTemplates(folder) {
     const templates = [];
     const errors = [];
-    try {
-      templates.push(await loadFolderTemplate(folder));
-    } catch (error) {
-      errors.push(`${folder.name}: ${error.message}`);
-    }
-    for (const entry of await folderEntries(folder)) {
-      if (!isFolderEntry(entry)) continue;
+    const discovered = await discoverTemplateFolders(folder);
+    for (const { folder: templateFolder, prefix } of discovered) {
       try {
-        templates.push(await loadFolderTemplate(entry, {
-          id: `folder:${folder.name}/${entry.name}`
-        }));
-        const last = templates[templates.length - 1];
-        last.name = `${last.config?.app?.name || entry.name} (${entry.name})`;
+        const template = await loadFolderTemplate(templateFolder, {
+          id: templateFolderId(prefix, templateFolder.name),
+          name: templateDisplayName(null, templateFolder.name, prefix)
+        });
+        template.name = templateDisplayName(template.config, templateFolder.name, prefix);
+        templates.push(template);
       } catch (error) {
-        errors.push(`${entry.name}: ${error.message}`);
+        errors.push(`${prefix || templateFolder.name}: ${error.message}`);
       }
     }
     if (!templates.length) {
-      throw new Error(`No valid templates found. Expected template folders with api.json and app_build.json or app_build.yaml.${errors.length ? ` First error: ${errors[0]}` : ""}`);
+      throw new Error(
+        `No valid templates found. Point to a template folder or an aPix Builder config directory (default/, templates/, default-rh/, templates-rh/).${errors.length ? ` First error: ${errors[0]}` : ""}`
+      );
     }
     return templates;
   }
@@ -8657,14 +9011,18 @@ ${end.comment}` : end.comment;
     const scope = currentTemplateScope();
     const { templates, errors } = await loadBundledTemplates(scope);
     try {
-      const token = localStorage.getItem(TEMPLATE_FOLDER_KEY);
+      const token = readTemplateFolderToken(scope);
       if (token && !isRunningHubAppMode()) {
         const folder = await storage4.localFileSystem.getEntryForPersistentToken(token);
-        const folderTemplates = (await loadFolderTemplates(folder)).filter((template) => template.scope === scope);
-        templates.push(...folderTemplates);
+        if (!isFolderEntry(folder)) {
+          clearTemplateFolderToken(scope);
+        } else {
+          const folderTemplates = (await loadFolderTemplates(folder)).filter((template) => template.scope === scope);
+          templates.push(...folderTemplates);
+        }
       }
     } catch (error) {
-      console.warn("Stored template folder is no longer available", error);
+      console.warn(`Stored template folder for ${scope} is no longer available`, error);
     }
     state.templates = templates;
     els.templateSelect.innerHTML = "";
@@ -8689,14 +9047,17 @@ ${end.comment}` : end.comment;
   async function chooseTemplateFolder() {
     try {
       const folder = await storage4.localFileSystem.getFolder();
-      const token = await storage4.localFileSystem.createPersistentToken(folder);
-      localStorage.setItem(TEMPLATE_FOLDER_KEY, token);
+      if (!isFolderEntry(folder)) {
+        throw new Error("Please select a folder (e.g. config/ or config/default-rh/)");
+      }
       const scope = currentTemplateScope();
+      const token = await storage4.localFileSystem.createPersistentToken(folder);
+      saveTemplateFolderToken(scope, token);
       const templates = (await loadFolderTemplates(folder)).filter((template) => template.scope === scope);
       if (!templates.length) {
         throw new Error(scope === "runninghub-wf" ? "No RunningHub Workflow templates found (missing runninghub.workflowId in YAML)" : "No local ComfyUI templates found in folder");
       }
-      state.templates = state.templates.filter((item) => item.source !== "folder").concat(templates);
+      state.templates = state.templates.filter((item) => item.source !== "folder" || item.scope !== scope).concat(templates);
       await refreshTemplateSelect(templates[0].id);
       setStatus(`Loaded ${templates.length} template(s) from ${folder.name}`);
     } catch (error) {
@@ -8724,10 +9085,14 @@ ${end.comment}` : end.comment;
       if (rhWf && !isRunningHubWfTemplate(state.config)) {
         throw new Error("RunningHub Workflow template is missing runninghub.workflowId");
       }
+      if (!state.workflow && rhWf && usesSavedWorkflowJson(state.config, false)) {
+        state.workflow = await resolveTemplateWorkflow(template);
+        template.workflow = cloneData(state.workflow);
+      }
       if (state.workflow) {
         validateWorkflowMappings(state.config, state.workflow, { requireOutput: !rhWf });
       } else if (rhWf && usesSavedWorkflowJson(state.config, false)) {
-        throw new Error("Template enables saveWorkflowJson but api.json is missing");
+        throw new Error("Template requires workflow JSON \u2014 add api.json or set RunningHub API key to fetch by workflowId");
       }
       const inputs = flattenInputs(state.config.input || {});
       state.localValues = buildDefaults(inputs);
@@ -8800,16 +9165,20 @@ ${end.comment}` : end.comment;
     state.runningHubNodesLoading = true;
     state.runningHubNodesError = "";
     els.loadRunningHubNodesBtn.disabled = true;
-    setStatus("Loading RunningHub nodeInfoList...");
+    setStatus("Loading RunningHub app info...");
     try {
-      const nodes = await getWebappNodes(apiKey, webappId, state.abortController?.signal);
+      const webapp = await getWebappCallDemo(apiKey, webappId, state.abortController?.signal);
+      const nodes = webapp.nodeInfoList || [];
+      state.runningHubWebappName = webapp.webappName || "";
       state.runningHubNodes = nodes;
       state.runningHubNodeValues = buildRunningHubDefaults(nodes);
       if (isRunningHubAppMode()) renderRunningHubForm();
-      setStatus(nodes.length ? `Loaded ${nodes.length} RunningHub node(s)` : "RunningHub returned 0 nodes");
+      const appLabel = webapp.webappName ? `"${webapp.webappName}"` : webappId;
+      setStatus(nodes.length ? `Loaded ${nodes.length} node(s) for ${appLabel}` : `RunningHub returned 0 nodes for ${appLabel}`);
       return nodes;
     } catch (error) {
       state.runningHubNodes = [];
+      state.runningHubWebappName = "";
       state.runningHubNodeValues = {};
       state.runningHubNodesError = error.message;
       if (isRunningHubAppMode()) renderRunningHubForm();
@@ -8821,13 +9190,14 @@ ${end.comment}` : end.comment;
     }
   }
   function switchExecutionMode(mode) {
-    const nextMode = mode === "runninghub" || mode === "runninghub-app" ? "runninghub-app" : mode === "runninghub-wf" ? "runninghub-wf" : "local";
+    const nextMode = normalizeExecutionMode(mode);
     if (isRunningHubAppMode()) state.runningHubNodeValues = state.values;
     else state.localValues = state.values;
     state.settings.executionMode = nextMode;
+    syncExecutionModeUi(nextMode);
+    syncModeVisibility();
     saveExecutionMode(nextMode);
     saveSettings();
-    syncModeVisibility();
     loadTemplates().then(() => {
       if (nextMode === "runninghub-app") {
         state.values = state.runningHubNodeValues;
@@ -8895,7 +9265,7 @@ ${end.comment}` : end.comment;
     });
     let importedCount = 0;
     for (const [index, output] of outputs.entries()) {
-      const { buffer } = await fetchRunningHubOutputBytes(output, state.abortController.signal);
+      const { buffer } = await fetchRunningHubOutputBytes(output, state.abortController.signal, { onStatus: setStatus });
       await importBufferAsLayer(buffer, outputFilename(output, index), selectionInfo);
       importedCount += 1;
     }
@@ -8923,7 +9293,11 @@ ${end.comment}` : end.comment;
       throw new Error("Template is missing runninghub.workflowId");
     }
     if (useSavedJson && !state.workflow) {
-      throw new Error("Template enables saveWorkflowJson but api.json is missing");
+      setStatus("Fetching RunningHub workflow JSON...");
+      state.workflow = await resolveTemplateWorkflow({ config: state.config, workflow: null });
+      if (!state.workflow) {
+        throw new Error("Template requires workflow JSON \u2014 add api.json or set RunningHub API key to fetch by workflowId");
+      }
     }
     const inputs = flattenInputs(state.config.input || {});
     const request = requestPayload(inputs, state.values);
@@ -8997,7 +9371,7 @@ ${end.comment}` : end.comment;
     });
     let importedCount = 0;
     for (const [index, output] of outputs.entries()) {
-      const { buffer } = await fetchRunningHubOutputBytes(output, signal);
+      const { buffer } = await fetchRunningHubOutputBytes(output, signal, { onStatus: setStatus });
       await importBufferAsLayer(buffer, outputFilename(output, index), selectionInfo);
       importedCount += 1;
     }
@@ -9079,7 +9453,7 @@ ${end.comment}` : end.comment;
       const outputs = collectOutputs(state.config, historyRoot[queued.prompt_id], target);
       let importedCount = 0;
       for (const output of outputs) {
-        const { buffer } = await fetchOutputBytes(output, state.abortController.signal);
+        const { buffer } = await fetchOutputBytes(output, state.abortController.signal, { onStatus: setStatus });
         await importBufferAsLayer(buffer, output.filename, selectionInfo);
         importedCount += 1;
       }
@@ -9151,6 +9525,29 @@ ${end.comment}` : end.comment;
     field.append(label, control);
     return field;
   }
+  function createSecretField(labelText, input, toggleId) {
+    const field = document.createElement("div");
+    field.className = "field";
+    const label = document.createElement("span");
+    label.textContent = labelText;
+    const row = document.createElement("div");
+    row.className = "inputWithBtn";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.id = toggleId;
+    toggle.className = "iconButton";
+    row.append(input, toggle);
+    field.append(label, row);
+    return field;
+  }
+  function bindSecretToggle(toggleBtn, input, labels = {}) {
+    if (!toggleBtn || !input) return;
+    syncSecretToggleButton(toggleBtn, input, labels);
+    safeBind(toggleBtn, "click", () => {
+      input.type = input.type === "password" ? "text" : "password";
+      syncSecretToggleButton(toggleBtn, input, labels);
+    }, "toggle secret");
+  }
   function findSettingsSection() {
     const serverInput = byId("serverUrlInput");
     let node = serverInput?.parentElement || null;
@@ -9201,13 +9598,24 @@ ${end.comment}` : end.comment;
     if (!toggle) {
       toggle = document.createElement("button");
       toggle.id = "settingsToggleBtn";
-      toggle.className = "secondary compactButton";
+      toggle.className = "iconButton";
       toggle.type = "button";
+      toggle.textContent = "\u25B2";
+      setSettingsToggleIcon(toggle, false);
       const header = settingsSection.querySelector(".sectionHeader");
       if (header) header.append(toggle);
       else settingsSection.insertBefore(toggle, body);
     }
     return body;
+  }
+  function ensureSettingsOrder(settingsBody) {
+    if (!settingsBody) return;
+    const nodes = [
+      findServerRow(),
+      byId("runningHubSettings"),
+      byId("localWorkflowSettings")
+    ].filter((node) => node && node.parentElement === settingsBody);
+    for (const node of nodes) settingsBody.append(node);
   }
   function ensureLocalWorkflowSettings(settingsBody) {
     if (!settingsBody) return;
@@ -9222,9 +9630,7 @@ ${end.comment}` : end.comment;
       wrap.className = "localWorkflowSettings";
     }
     if (wrap.parentElement !== settingsBody) {
-      const serverRow = findServerRow();
-      if (serverRow?.nextSibling) settingsBody.insertBefore(wrap, serverRow.nextSibling);
-      else settingsBody.append(wrap);
+      settingsBody.append(wrap);
     }
     let header = wrap.querySelector(".compactHeader");
     if (!header) {
@@ -9237,18 +9643,40 @@ ${end.comment}` : end.comment;
     const title = header.querySelector("h2") || document.createElement("h2");
     title.textContent = "Workflow";
     if (!title.parentElement) header.insertBefore(title, header.firstChild);
-    if (folderBtn.parentElement !== header) header.append(folderBtn);
+    let actions = header.querySelector(".row");
+    if (!actions) {
+      actions = document.createElement("div");
+      actions.className = "row";
+      header.append(actions);
+    }
+    const refreshBtn = byId("refreshTemplatesBtn");
+    if (refreshBtn && refreshBtn.parentElement !== actions) actions.append(refreshBtn);
+    if (folderBtn.parentElement !== actions) actions.append(folderBtn);
     const templateField = templateSelect.closest?.(".field") || templateSelect.parentElement;
     if (templateField && templateField.parentElement !== wrap) wrap.append(templateField);
     if (oldSection && oldSection !== findSettingsSection() && !oldSection.contains(templateSelect) && !oldSection.contains(folderBtn)) {
       oldSection.remove();
     }
+    ensureSettingsOrder(settingsBody);
+  }
+  function initToolbarIcons() {
+    setButtonIcon(els.testConnectionBtn, "check", "Test connection");
+    setButtonIcon(els.refreshTemplatesBtn, "refresh", "Reload templates");
+    setSettingsToggleIcon(els.settingsToggleBtn, Boolean(els.settingsBody?.hidden));
+    bindSecretToggle(els.toggleServerUrlBtn, els.serverUrlInput, {
+      show: "Show server address",
+      hide: "Hide server address"
+    });
+    bindSecretToggle(els.toggleRunningHubApiKeyBtn, els.runningHubApiKeyInput, {
+      show: "Show API key",
+      hide: "Hide API key"
+    });
   }
   function setSettingsCollapsed(collapsed) {
     if (!els.settingsBody || !els.settingsToggleBtn) return;
     els.settingsBody.hidden = collapsed;
     els.settingsBody.style.display = collapsed ? "none" : "";
-    els.settingsToggleBtn.textContent = collapsed ? "Show" : "Hide";
+    setSettingsToggleIcon(els.settingsToggleBtn, collapsed);
     localStorage.setItem(SETTINGS_COLLAPSED_KEY, collapsed ? "1" : "0");
   }
   function toggleSettings() {
@@ -9267,12 +9695,14 @@ ${end.comment}` : end.comment;
     if (!byId("executionModeSelect")) {
       const modeSelect = document.createElement("select");
       modeSelect.id = "executionModeSelect";
+      modeSelect.hidden = true;
+      modeSelect.setAttribute("aria-hidden", "true");
       modeSelect.innerHTML = `
       <option value="local">ComfyUI Local</option>
-      <option value="runninghub-app">RunningHub AI App</option>
       <option value="runninghub-wf">RunningHub Workflow</option>
+      <option value="runninghub-app">RunningHub AI App</option>
     `;
-      settingsBody.insertBefore(createField("Run mode", modeSelect), serverRow);
+      (byId("app") || document.body).append(modeSelect);
     }
     let wrap = byId("runningHubSettings");
     if (!wrap) {
@@ -9280,15 +9710,15 @@ ${end.comment}` : end.comment;
       wrap.id = "runningHubSettings";
       wrap.className = "runningHubSettings";
       wrap.hidden = true;
-      if (serverRow.nextSibling) settingsBody.insertBefore(wrap, serverRow.nextSibling);
-      else settingsBody.append(wrap);
+      settingsBody.append(wrap);
     }
     if (!byId("runningHubApiKeyInput")) {
       const apiInput = document.createElement("input");
       apiInput.id = "runningHubApiKeyInput";
       apiInput.type = "password";
       apiInput.placeholder = "API key";
-      wrap.append(createField("RunningHub API Key", apiInput));
+      apiInput.autocomplete = "off";
+      wrap.append(createSecretField("RunningHub API Key", apiInput, "toggleRunningHubApiKeyBtn"));
     }
     let appWrap = byId("runningHubAppSettings");
     if (!appWrap) {
@@ -9339,6 +9769,7 @@ ${end.comment}` : end.comment;
       loadBtn.textContent = "Load RunningHub Nodes";
       appWrap.append(loadBtn);
     }
+    ensureSettingsOrder(settingsBody);
   }
   function bindEvents() {
     safeBind(els.runBtn, "click", startRunFromUi, "run click");
@@ -9346,12 +9777,22 @@ ${end.comment}` : end.comment;
     safeBind(els.testConnectionBtn, "click", testConnection, "test click");
     safeBind(els.settingsToggleBtn, "click", toggleSettings, "settings toggle");
     safeBind(els.executionModeSelect, "change", () => switchExecutionMode(els.executionModeSelect.value), "mode change");
+    bindExecutionModeTabs();
     safeBind(els.runningHubApiKeyInput, "input", saveSettings, "runninghub api key");
     safeBind(els.runningHubAppSelect, "change", () => {
       syncRunningHubAppUi();
       saveSettings();
+      if (isRunningHubAppMode()) {
+        state.runningHubWebappName = "";
+        loadRunningHubNodes().catch((error) => setStatus(`RunningHub load failed: ${error.message}`));
+      }
     }, "runninghub app");
     safeBind(els.runningHubCustomWebappIdInput, "input", saveSettings, "runninghub custom webapp id");
+    safeBind(els.runningHubCustomWebappIdInput, "change", () => {
+      if (!isRunningHubAppMode()) return;
+      state.runningHubWebappName = "";
+      loadRunningHubNodes().catch((error) => setStatus(`RunningHub load failed: ${error.message}`));
+    }, "runninghub custom webapp reload");
     safeBind(els.loadRunningHubNodesBtn, "click", () => loadRunningHubNodes(), "runninghub nodes");
     safeBind(els.refreshTemplatesBtn, "click", loadTemplates, "refresh click");
     safeBind(els.chooseTemplateFolderBtn, "click", chooseTemplateFolder, "folder click");
@@ -9363,11 +9804,14 @@ ${end.comment}` : end.comment;
     [
       "settingsBody",
       "settingsToggleBtn",
-      "serverUrlInput",
+      "executionModeToggle",
       "executionModeSelect",
+      "serverUrlInput",
+      "toggleServerUrlBtn",
       "runningHubSettings",
       "runningHubAppSettings",
       "runningHubApiKeyInput",
+      "toggleRunningHubApiKeyBtn",
       "runningHubAppSelect",
       "runningHubCustomWebappField",
       "runningHubCustomWebappIdInput",
@@ -9386,6 +9830,7 @@ ${end.comment}` : end.comment;
     ].forEach((id) => {
       els[id] = byId(id);
     });
+    initToolbarIcons();
     setSettingsCollapsed(localStorage.getItem(SETTINGS_COLLAPSED_KEY) === "1");
   }
   document.addEventListener("DOMContentLoaded", async () => {

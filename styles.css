@@ -8,6 +8,11 @@
   --line: #454545;
   --accent: #4ea1ff;
   --danger: #e45d5d;
+  --pad-x: 12px;
+  --pad-y: 10px;
+  --field-gap: 6px;
+  --section-gap: 12px;
+  --btn-gap: 6px;
 }
 
 html,
@@ -43,10 +48,9 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 10px 12px 0;
+  padding: var(--pad-y) var(--pad-x) 16px;
 }
 
-.topbar,
 .sectionHeader,
 .row {
   display: flex;
@@ -54,7 +58,6 @@ body {
   gap: 8px;
 }
 
-.topbar,
 .sectionHeader {
   justify-content: space-between;
 }
@@ -63,9 +66,71 @@ body {
   justify-content: flex-start;
 }
 
+#app,
+.scrollArea,
+.settingsBody,
+#dynamicForm,
+label.field,
+.field {
+  text-align: left;
+}
+
 .topbar {
-  padding-bottom: 10px;
+  width: 100%;
+  padding-bottom: var(--pad-y);
   border-bottom: 1px solid var(--line);
+}
+
+.topbarTitle {
+  font-size: 14px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.appMark {
+  display: inline-block;
+  vertical-align: middle;
+  width: 18px;
+  height: 18px;
+  margin-right: 7px;
+  color: var(--text);
+}
+
+.appMark svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.modeTabs {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.modeTabs button {
+  display: inline-block;
+  vertical-align: middle;
+  height: 22px;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.modeTabs button.active {
+  background: var(--panel-2);
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 650;
 }
 
 .eyebrow {
@@ -84,30 +149,93 @@ h1 {
   font-size: 18px;
 }
 
+.sectionHeader h2 {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sectionHeader .row {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.compactHeader .row button {
+  height: 30px;
+  min-height: 30px;
+  line-height: 1;
+}
+
+.compactHeader .row .iconButton {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+}
+
+.compactHeader .row .compactButton {
+  min-width: 56px;
+  padding: 4px 10px;
+}
+
 h2 {
   font-size: 13px;
 }
 
 .section {
-  padding: 12px 0;
+  padding: var(--section-gap) 0;
   border-bottom: 1px solid var(--line);
+}
+
+#dynamicForm {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
 }
 
 .stickyFooter {
   flex-shrink: 0;
-  padding: 10px 12px 12px;
+  padding: var(--pad-y) var(--pad-x) 12px;
   border-top: 1px solid var(--line);
   border-bottom: 0;
   background: var(--bg);
   box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.25);
 }
 
+label.field,
 .field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  margin-top: 10px;
+  align-items: stretch;
+  margin: var(--field-gap) 0 0;
+  padding: 0;
   width: 100%;
+  text-align: left;
+}
+
+label.field > span,
+.field > span {
+  display: block;
+  margin-bottom: var(--field-gap);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: left;
+}
+
+label.field > span + .imageField {
+  margin-top: 4px;
+}
+
+label.field.field--inline > span,
+label.field.field--slider > span {
+  margin-bottom: 0;
+}
+
+#dynamicForm > label.field:first-child,
+.settingsBody > label.field:first-child {
+  margin-top: 0;
+}
+
+.workflowSectionHeader {
+  margin-bottom: var(--section-gap);
 }
 
 .field span,
@@ -120,35 +248,52 @@ h2 {
 
 .inputWithBtn {
   display: flex;
-  gap: 6px;
+  width: 100%;
   margin-top: 10px;
   align-items: center;
 }
 
+.field > .inputWithBtn {
+  margin-top: 0;
+}
+
 .inputWithBtn input {
   flex: 1;
+  min-width: 0;
+  height: 30px;
+  margin: 0;
 }
 
 .inputWithBtn button {
-  flex-shrink: 0;
+  flex: 0 0 auto;
   width: auto;
+  height: 30px;
+  margin: 0 0 0 var(--btn-gap);
+}
+
+.inputWithBtn button.iconButton {
+  width: 30px;
+  min-width: 30px;
 }
 
 .field--slider {
   flex-direction: row;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
 .field--slider > span {
   flex: 0 0 auto;
+  max-width: 42%;
   color: var(--text);
   font-size: 12px;
-  padding-right: 10px;
+  text-align: left;
 }
 
 .field--slider > div {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -161,7 +306,7 @@ h2 {
 }
 
 .field--slider > div > span {
-  min-width: 36px;
+  min-width: 40px;
   text-align: right;
   font-size: 11px;
   color: var(--muted);
@@ -194,9 +339,11 @@ h2 {
 }
 
 .field--inline > span {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--text);
   font-size: 12px;
+  text-align: left;
 }
 
 .field--inline > div {
@@ -234,6 +381,91 @@ button {
   line-height: 16px;
 }
 
+/* UXP adds side margins on form controls — reset only horizontal offset */
+#app input:not([type="checkbox"]):not([type="radio"]),
+#app textarea,
+#app select {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+#app .topbar button,
+#app .sectionHeader button,
+#app .modeTabs button,
+#app .imageActions button,
+#app .row button,
+#app .booleanToggle button,
+#app .seedRandom {
+  margin-top: 0;
+  margin-bottom: 0;
+  margin-right: 0;
+}
+
+#app .inputWithBtn > input {
+  margin: 0;
+}
+
+#app .inputWithBtn > button {
+  margin-top: 0;
+  margin-bottom: 0;
+  margin-right: 0;
+  margin-left: var(--btn-gap);
+}
+
+#app .compactHeader .row > button {
+  margin-top: 0;
+  margin-bottom: 0;
+  margin-right: 0;
+  margin-left: var(--btn-gap);
+}
+
+#app .compactHeader .row > button:first-child {
+  margin-left: 0;
+}
+
+/* UXP ignores flex gap — space button groups with margins */
+#app .modeTabs button {
+  margin-right: 4px;
+}
+
+#app .modeTabs button:last-child {
+  margin-right: 0;
+}
+
+#app .sectionHeader .row button + button,
+#app .row button + button {
+  margin-left: var(--btn-gap);
+}
+
+#app .imageActions button {
+  margin-right: var(--btn-gap);
+  margin-bottom: var(--btn-gap);
+}
+
+#app .imageActions button:last-child {
+  margin-right: 0;
+}
+
+#app .stickyFooter .row button + button {
+  margin-left: 8px;
+}
+
+#app .seedRandom {
+  margin-left: var(--btn-gap);
+}
+
+#app .booleanToggle button + button {
+  margin-left: 0;
+}
+
+#app .modeTabs button:first-child,
+#app .sectionHeader .row button:first-child,
+#app .row button:first-child,
+#app .stickyFooter .row button:first-child,
+#app .sectionHeader > button {
+  margin-left: 0;
+}
+
 textarea {
   min-height: 72px;
   height: 72px;
@@ -253,7 +485,14 @@ button {
   min-width: 72px;
   cursor: pointer;
   background: var(--panel-2);
-  text-align: center;
+}
+
+.modeTabs button,
+.iconButton,
+.compactButton,
+.sectionHeader button,
+.seedRandom {
+  min-width: 0;
 }
 
 button:disabled {
@@ -279,13 +518,51 @@ button:disabled {
 }
 
 .iconButton {
-  width: 32px;
-  min-width: 32px;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
   padding: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+
+.iconButton .iconGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.iconButton .iconGlyph svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.sectionHeader > .iconButton {
+  width: 30px;
+  min-width: 30px;
+}
+
+.inputWithBtn .iconButton {
+  flex-shrink: 0;
 }
 
 .row button {
+  flex: 0 0 auto;
+}
+
+.stickyFooter .row {
+  margin-top: 8px;
+}
+
+.stickyFooter .row button {
   flex: 1 1 0;
+  min-width: 0;
 }
 
 .sectionHeader button {
@@ -300,12 +577,12 @@ button:disabled {
 }
 
 .settingsBody {
-  margin-top: 10px;
+  margin-top: var(--field-gap);
 }
 
 .localWorkflowSettings {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: var(--section-gap);
+  padding-top: var(--section-gap);
   border-top: 1px solid var(--line);
 }
 
@@ -331,15 +608,20 @@ button:disabled {
 }
 
 .runningHubSettings {
-  margin-top: 10px;
+  margin-top: var(--field-gap);
   padding: 0;
   border: 0;
   background: transparent;
 }
 
+.runningHubSettings > .field:first-child {
+  margin-top: 0;
+}
+
 .runningHubSettings button {
-  width: 100%;
+  width: auto;
   margin-top: 10px;
+  align-self: flex-start;
 }
 
 .menuSubField {
@@ -384,15 +666,31 @@ button:disabled {
   color: var(--muted);
 }
 
+.imageField {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.imageField > .note + .imageActions {
+  margin-top: var(--field-gap);
+}
+
+.imageField > .imageActions + .preview {
+  margin-top: var(--field-gap);
+}
+
 .imageActions {
   display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  width: 100%;
 }
 
 .imageActions button {
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: 68px;
+  width: auto;
 }
 
 .preview {

@@ -1,14 +1,13 @@
 {
   "app": {
-    "name": "Klein_Edit_Image"
+    "name": "Klein Edit Image"
   },
   "input": {
     "checkpoint_klein": {
       "id": "1-ckpt_name",
       "ui": {
         "type": "checkpoints",
-        "label": "Checkpoint Klein",
-        "value": "Flux2-klein-9b.safetensors"
+        "label": "Checkpoint Klein"
       }
     },
     "note": {

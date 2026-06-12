@@ -1,9 +1,5 @@
 export const BUILTIN_TEMPLATES = [
-  "klein-edit-image",
-  "fashion-flatlay",
-  "mask-upscale",
-  "test-2output",
-  "upscale-klein"
+  "klein-edit-image"
 ];
 export const BUILTIN_RH_TEMPLATES = [
   "klein-edit-image-lora"
@@ -13,13 +9,21 @@ import {
   RUNNINGHUB_APP_OPTIONS,
   loadExecutionMode,
   loadRunningHubSettings,
+  normalizeExecutionMode,
   saveExecutionMode,
   saveRunningHubSettings
 } from "./services/runninghub.js";
 
 export const SETTINGS_KEY = "apix-builder:settings:v1";
+/** @deprecated migrated to scope-specific keys on read */
 export const TEMPLATE_FOLDER_KEY = "apix-builder:template-folder:v1";
+export const TEMPLATE_FOLDER_KEY_LOCAL = "apix-builder:template-folder:local:v1";
+export const TEMPLATE_FOLDER_KEY_RH_WF = "apix-builder:template-folder:runninghub-wf:v1";
 export const DEFAULT_SERVER = "http://127.0.0.1:8188";
+
+export function templateFolderStorageKey(scope) {
+  return scope === "runninghub-wf" ? TEMPLATE_FOLDER_KEY_RH_WF : TEMPLATE_FOLDER_KEY_LOCAL;
+}
 
 export const state = {
   settings: {
@@ -38,6 +42,7 @@ export const state = {
   imagePreviews: {},
   serverChoices: {},
   runningHubNodes: [],
+  runningHubWebappName: "",
   runningHubNodeValues: {},
   runningHubNodesLoading: false,
   runningHubNodesError: "",
@@ -101,8 +106,10 @@ export function readSettings() {
 
 export function saveSettings() {
   state.settings.serverUrl = els.serverUrlInput.value.trim() || DEFAULT_SERVER;
-  const mode = els.executionModeSelect?.value || "local";
-  state.settings.executionMode = mode === "runninghub-app" || mode === "runninghub-wf" ? mode : "local";
+  state.settings.executionMode = normalizeExecutionMode(state.settings.executionMode);
+  if (els.executionModeSelect) {
+    els.executionModeSelect.value = state.settings.executionMode;
+  }
   const selectedWebapp = els.runningHubAppSelect?.value || DEFAULT_RH_WEBAPP_ID;
   const isDefaultWebapp = RUNNINGHUB_APP_OPTIONS.some(app => app.id === selectedWebapp);
   const webappId = isDefaultWebapp

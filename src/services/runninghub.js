@@ -10,11 +10,14 @@ export const RUNNINGHUB_APP_OPTIONS = [
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
-export function loadExecutionMode() {
-  const stored = localStorage.getItem(EXECUTION_MODE_KEY);
-  if (stored === "runninghub") return "runninghub-app";
-  if (stored === "runninghub-app" || stored === "runninghub-wf") return stored;
+export function normalizeExecutionMode(mode) {
+  if (mode === "runninghub" || mode === "runninghub-app") return "runninghub-app";
+  if (mode === "runninghub-wf") return "runninghub-wf";
   return "local";
+}
+
+export function loadExecutionMode() {
+  return normalizeExecutionMode(localStorage.getItem(EXECUTION_MODE_KEY));
 }
 
 export function isRunningHubMode(mode) {
@@ -35,12 +38,8 @@ export function loadRunningHubSettings() {
 }
 
 export function saveExecutionMode(mode) {
-  const normalized = mode === "runninghub" ? "runninghub-app" : mode;
-  if (normalized === "runninghub-app" || normalized === "runninghub-wf") {
-    localStorage.setItem(EXECUTION_MODE_KEY, normalized);
-  } else {
-    localStorage.setItem(EXECUTION_MODE_KEY, "local");
-  }
+  const normalized = normalizeExecutionMode(mode);
+  localStorage.setItem(EXECUTION_MODE_KEY, normalized);
 }
 
 export function saveRunningHubSettings(settings) {
@@ -224,14 +223,32 @@ export async function getWorkflowJson(apiKey, workflowId, signal) {
   return parseWorkflowPrompt(data.data?.prompt);
 }
 
-export async function getWebappNodes(apiKey, webappId, signal) {
+export function normalizeWebappCallDemo(payload = {}) {
+  return {
+    webappName: String(payload.webappName || "").trim(),
+    accessEncrypted: Boolean(payload.accessEncrypted),
+    statisticsInfo: payload.statisticsInfo && typeof payload.statisticsInfo === "object"
+      ? payload.statisticsInfo
+      : null,
+    covers: Array.isArray(payload.covers) ? payload.covers : [],
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    nodeInfoList: Array.isArray(payload.nodeInfoList) ? payload.nodeInfoList : []
+  };
+}
+
+export async function getWebappCallDemo(apiKey, webappId, signal) {
   const query = new URLSearchParams({ apiKey, webappId });
   const response = await fetch(
     `${RUNNINGHUB_BASE}/api/webapp/apiCallDemo?${query}`,
     withSignal({ headers: rhHeaders(apiKey) }, signal)
   );
   const data = await readRunningHubEnvelope(response);
-  return data.data?.nodeInfoList || [];
+  return normalizeWebappCallDemo(data.data);
+}
+
+export async function getWebappNodes(apiKey, webappId, signal) {
+  const demo = await getWebappCallDemo(apiKey, webappId, signal);
+  return demo.nodeInfoList;
 }
 
 export async function uploadBlobToRunningHub(apiKey, blob, filename, mimeType = "image/png", signal) {
@@ -474,11 +491,16 @@ export function outputFilename(output, index = 0) {
   return `runninghub_${Date.now()}_${index}.${ext}`;
 }
 
-export async function fetchRunningHubOutputBytes(output, signal) {
+export async function fetchRunningHubOutputBytes(output, signal, options = {}) {
   const url = outputUrl(output);
   if (!url) throw new Error("RunningHub output missing fileUrl");
-  const response = await fetch(url, withSignal({}, signal));
-  if (!response.ok) throw new Error(`RunningHub output fetch failed: ${response.status} ${await response.text()}`);
+  const { fetchWithRetry } = await import("../utils/fetchRetry.js");
+  const response = await fetchWithRetry(url, {
+    signal,
+    onRetry: ({ attempt, waitMs }) => {
+      options.onStatus?.(`RunningHub output download failed, retrying (${attempt}) in ${Math.ceil(waitMs / 1000)}s...`);
+    }
+  });
   return {
     buffer: await response.arrayBuffer(),
     mimeType: response.headers.get("content-type") || "image/png"

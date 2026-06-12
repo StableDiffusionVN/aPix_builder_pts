@@ -357,14 +357,15 @@ export function collectOutputs(config, history, target) {
   return outputs;
 }
 
-export async function fetchOutputBytes(output, signal) {
-  const response = await fetch(output.url, {
+export async function fetchOutputBytes(output, signal, options = {}) {
+  const { fetchWithRetry } = await import("../utils/fetchRetry.js");
+  const response = await fetchWithRetry(output.url, {
     headers: output.headers || {},
-    signal
+    signal,
+    onRetry: ({ attempt, waitMs }) => {
+      options.onStatus?.(`Output download failed, retrying (${attempt}) in ${Math.ceil(waitMs / 1000)}s...`);
+    }
   });
-  if (!response.ok) {
-    throw new Error(`${response.status} ${await response.text()}`);
-  }
   return {
     buffer: await response.arrayBuffer(),
     mimeType: response.headers.get("content-type") || "image/png"

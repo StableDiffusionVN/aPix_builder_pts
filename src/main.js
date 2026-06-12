@@ -5,6 +5,7 @@ import {
   BUILTIN_RH_TEMPLATES,
   SETTINGS_KEY,
   TEMPLATE_FOLDER_KEY,
+  templateFolderStorageKey,
   DEFAULT_SERVER,
   byId,
   setStatus,
@@ -49,17 +50,25 @@ import {
 } from "./ui/form.js";
 
 import {
+  setButtonIcon,
+  setSettingsToggleIcon,
+  syncSecretToggleButton
+} from "./ui/icons.js";
+
+import {
   buildPatchedRunningHubWorkflow,
   buildRunningHubDefaults,
   buildRunningHubNodeInfoList,
   DEFAULT_RH_WEBAPP_ID,
   extractRunningHubWorkflowId,
   fetchRunningHubOutputBytes,
-  getWebappNodes,
+  getWebappCallDemo,
+  getWorkflowJson,
   isRunningHubWfTemplate,
   listNodeChoices,
   nodeFieldKey,
   nodesWithValues,
+  normalizeExecutionMode,
   outputFilename,
   parsePromptTips,
   prepareNodeInfoList,
@@ -73,6 +82,17 @@ import {
   waitForTaskOutputs
 } from "./services/runninghub.js";
 
+import {
+  filterFolderEntries,
+  isFolderEntry,
+  MAX_TEMPLATE_SCAN_DEPTH,
+  pickTemplateScanTargets,
+  shouldRecurseIntoScanTarget,
+  templateDisplayName,
+  templateFolderId,
+  TEMPLATE_MANIFEST_FILES
+} from "./lib/templateFolder.js";
+
 import YAML from "yaml";
 
 const fs = require("fs");
@@ -85,10 +105,11 @@ function cloneData(value) {
 }
 
 function currentExecutionMode() {
-  const mode = state.settings.executionMode;
-  if (mode === "runninghub" || mode === "runninghub-app") return "runninghub-app";
-  if (mode === "runninghub-wf") return "runninghub-wf";
-  return "local";
+  return normalizeExecutionMode(state.settings.executionMode);
+}
+
+function modeFromElement(element) {
+  return element?.getAttribute?.("data-mode") || "";
 }
 
 function isRunningHubAppMode() {
@@ -105,6 +126,28 @@ function isRunningHubMode() {
 
 function currentTemplateScope() {
   return isRunningHubWfMode() ? "runninghub-wf" : "local";
+}
+
+function readTemplateFolderToken(scope = currentTemplateScope()) {
+  const key = templateFolderStorageKey(scope);
+  let token = localStorage.getItem(key);
+  if (!token && scope === "local") {
+    const legacy = localStorage.getItem(TEMPLATE_FOLDER_KEY);
+    if (legacy) {
+      localStorage.setItem(key, legacy);
+      localStorage.removeItem(TEMPLATE_FOLDER_KEY);
+      token = legacy;
+    }
+  }
+  return token;
+}
+
+function saveTemplateFolderToken(scope, token) {
+  localStorage.setItem(templateFolderStorageKey(scope), token);
+}
+
+function clearTemplateFolderToken(scope) {
+  localStorage.removeItem(templateFolderStorageKey(scope));
 }
 
 function runningHubNodeToInput(node) {
@@ -132,9 +175,16 @@ function runningHubNodeToInput(node) {
   };
 }
 
+function runningHubAppDisplayName() {
+  if (state.runningHubWebappName) return state.runningHubWebappName;
+  const webappId = state.settings.runningHub?.webappId?.trim() || DEFAULT_RH_WEBAPP_ID;
+  const preset = RUNNINGHUB_APP_OPTIONS.find(app => app.id === webappId);
+  return preset?.name || "RunningHub Inputs";
+}
+
 function renderRunningHubForm() {
   state.values = state.runningHubNodeValues;
-  els.workflowTitle.textContent = "RunningHub Inputs";
+  els.workflowTitle.textContent = runningHubAppDisplayName();
   renderDynamicForm(state.runningHubNodes.map(runningHubNodeToInput));
 }
 
@@ -154,6 +204,28 @@ function renderActiveForm() {
     els.dynamicForm.innerHTML = "";
     els.workflowTitle.textContent = "Inputs";
   }
+}
+
+function syncExecutionModeUi(mode = currentExecutionMode()) {
+  if (els.executionModeSelect) els.executionModeSelect.value = mode;
+  if (!els.executionModeToggle) return;
+  els.executionModeToggle.querySelectorAll("[data-mode]").forEach(button => {
+    const active = modeFromElement(button) === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+}
+
+function bindExecutionModeTabs() {
+  if (!els.executionModeToggle) return;
+  els.executionModeToggle.querySelectorAll("[data-mode]").forEach(button => {
+    safeBind(button, "click", () => {
+      const nextMode = modeFromElement(button);
+      if (nextMode && nextMode !== currentExecutionMode()) {
+        switchExecutionMode(nextMode);
+      }
+    }, "mode tab");
+  });
 }
 
 function syncModeVisibility() {
@@ -189,7 +261,7 @@ function syncRunningHubAppUi() {
 
 function applySettingsToUi() {
   els.serverUrlInput.value = state.settings.serverUrl;
-  els.executionModeSelect.value = currentExecutionMode();
+  syncExecutionModeUi(currentExecutionMode());
   els.runningHubApiKeyInput.value = state.settings.runningHub?.apiKey || "";
   const webappId = state.settings.runningHub?.webappId || DEFAULT_RH_WEBAPP_ID;
   const knownApp = RUNNINGHUB_APP_OPTIONS.find(app => app.id === webappId);
@@ -218,7 +290,14 @@ async function loadBuiltInTemplate(id, scope = "local") {
 }
 
 async function readFolderText(folder, name) {
-  const file = await folder.getEntry(name);
+  if (!isFolderEntry(folder)) throw new Error("Folder entry is missing");
+  let file;
+  try {
+    file = await folder.getEntry(name);
+  } catch (error) {
+    throw new Error(`Cannot read ${name}: ${error.message}`);
+  }
+  if (!file) throw new Error(`Missing file: ${name}`);
   return file.read();
 }
 
@@ -259,43 +338,98 @@ async function loadFolderTemplate(folder, options = {}) {
   };
 }
 
-function isFolderEntry(entry) {
-  return Boolean(entry?.isFolder || entry?.isDirectory || entry?.getEntries);
-}
-
 async function folderEntries(folder) {
+  if (!isFolderEntry(folder)) return [];
   try {
-    return await folder.getEntries();
-  } catch {
+    const entries = await folder.getEntries();
+    return filterFolderEntries(Array.isArray(entries) ? entries : []);
+  } catch (error) {
+    console.warn(`Cannot list folder ${folder.name || ""}:`, error);
     return [];
   }
+}
+
+async function folderHasTemplateManifest(folder) {
+  if (!isFolderEntry(folder)) return false;
+  for (const name of TEMPLATE_MANIFEST_FILES) {
+    try {
+      const entry = await folder.getEntry(name);
+      if (entry && entry.isFile !== false) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function discoverTemplateFolders(rootFolder, depth = 0, prefix = "") {
+  const found = [];
+  if (!isFolderEntry(rootFolder)) return found;
+
+  if (await folderHasTemplateManifest(rootFolder)) {
+    found.push({ folder: rootFolder, prefix });
+    return found;
+  }
+  if (depth >= MAX_TEMPLATE_SCAN_DEPTH) return found;
+
+  const targets = pickTemplateScanTargets(rootFolder.name, await folderEntries(rootFolder));
+  for (const entry of targets) {
+    if (await folderHasTemplateManifest(entry)) {
+      found.push({
+        folder: entry,
+        prefix: prefix ? `${prefix}${entry.name}` : entry.name
+      });
+      continue;
+    }
+    if (!shouldRecurseIntoScanTarget(entry.name, depth)) continue;
+    const nested = await discoverTemplateFolders(
+      entry,
+      depth + 1,
+      prefix ? `${prefix}${entry.name}/` : `${entry.name}/`
+    );
+    found.push(...nested);
+  }
+  return found;
+}
+
+async function resolveTemplateWorkflow(template) {
+  if (template.workflow) return template.workflow;
+  const config = template.config;
+  if (!isRunningHubWfTemplate(config)) return null;
+  if (!usesSavedWorkflowJson(config, false)) return null;
+
+  const workflowId = String(config.runninghub?.workflowId || "").trim();
+  if (!workflowId) return null;
+
+  const apiKey = state.settings.runningHub?.apiKey?.trim();
+  if (!apiKey) {
+    throw new Error("RunningHub API key required to fetch workflow JSON for this template");
+  }
+
+  setStatus(`Fetching workflow ${workflowId} from RunningHub...`);
+  return getWorkflowJson(apiKey, workflowId, state.abortController?.signal);
 }
 
 async function loadFolderTemplates(folder) {
   const templates = [];
   const errors = [];
+  const discovered = await discoverTemplateFolders(folder);
 
-  try {
-    templates.push(await loadFolderTemplate(folder));
-  } catch (error) {
-    errors.push(`${folder.name}: ${error.message}`);
-  }
-
-  for (const entry of await folderEntries(folder)) {
-    if (!isFolderEntry(entry)) continue;
+  for (const { folder: templateFolder, prefix } of discovered) {
     try {
-      templates.push(await loadFolderTemplate(entry, {
-        id: `folder:${folder.name}/${entry.name}`
-      }));
-      const last = templates[templates.length - 1];
-      last.name = `${last.config?.app?.name || entry.name} (${entry.name})`;
+      const template = await loadFolderTemplate(templateFolder, {
+        id: templateFolderId(prefix, templateFolder.name),
+        name: templateDisplayName(null, templateFolder.name, prefix)
+      });
+      template.name = templateDisplayName(template.config, templateFolder.name, prefix);
+      templates.push(template);
     } catch (error) {
-      errors.push(`${entry.name}: ${error.message}`);
+      errors.push(`${prefix || templateFolder.name}: ${error.message}`);
     }
   }
 
   if (!templates.length) {
-    throw new Error(`No valid templates found. Expected template folders with api.json and app_build.json or app_build.yaml.${errors.length ? ` First error: ${errors[0]}` : ""}`);
+    throw new Error(
+      `No valid templates found. Point to a template folder or an aPix Builder config directory (default/, templates/, default-rh/, templates-rh/).${errors.length ? ` First error: ${errors[0]}` : ""}`
+    );
   }
   return templates;
 }
@@ -319,15 +453,19 @@ async function loadTemplates() {
   const scope = currentTemplateScope();
   const { templates, errors } = await loadBundledTemplates(scope);
   try {
-    const token = localStorage.getItem(TEMPLATE_FOLDER_KEY);
+    const token = readTemplateFolderToken(scope);
     if (token && !isRunningHubAppMode()) {
       const folder = await storage.localFileSystem.getEntryForPersistentToken(token);
-      const folderTemplates = (await loadFolderTemplates(folder))
-        .filter(template => template.scope === scope);
-      templates.push(...folderTemplates);
+      if (!isFolderEntry(folder)) {
+        clearTemplateFolderToken(scope);
+      } else {
+        const folderTemplates = (await loadFolderTemplates(folder))
+          .filter(template => template.scope === scope);
+        templates.push(...folderTemplates);
+      }
     }
   } catch (error) {
-    console.warn("Stored template folder is no longer available", error);
+    console.warn(`Stored template folder for ${scope} is no longer available`, error);
   }
   state.templates = templates;
   els.templateSelect.innerHTML = "";
@@ -353,9 +491,12 @@ async function loadTemplates() {
 async function chooseTemplateFolder() {
   try {
     const folder = await storage.localFileSystem.getFolder();
-    const token = await storage.localFileSystem.createPersistentToken(folder);
-    localStorage.setItem(TEMPLATE_FOLDER_KEY, token);
+    if (!isFolderEntry(folder)) {
+      throw new Error("Please select a folder (e.g. config/ or config/default-rh/)");
+    }
     const scope = currentTemplateScope();
+    const token = await storage.localFileSystem.createPersistentToken(folder);
+    saveTemplateFolderToken(scope, token);
     const templates = (await loadFolderTemplates(folder))
       .filter(template => template.scope === scope);
     if (!templates.length) {
@@ -363,7 +504,9 @@ async function chooseTemplateFolder() {
         ? "No RunningHub Workflow templates found (missing runninghub.workflowId in YAML)"
         : "No local ComfyUI templates found in folder");
     }
-    state.templates = state.templates.filter(item => item.source !== "folder").concat(templates);
+    state.templates = state.templates
+      .filter(item => item.source !== "folder" || item.scope !== scope)
+      .concat(templates);
     await refreshTemplateSelect(templates[0].id);
     setStatus(`Loaded ${templates.length} template(s) from ${folder.name}`);
   } catch (error) {
@@ -393,10 +536,14 @@ async function selectTemplate(id) {
     if (rhWf && !isRunningHubWfTemplate(state.config)) {
       throw new Error("RunningHub Workflow template is missing runninghub.workflowId");
     }
+    if (!state.workflow && rhWf && usesSavedWorkflowJson(state.config, false)) {
+      state.workflow = await resolveTemplateWorkflow(template);
+      template.workflow = cloneData(state.workflow);
+    }
     if (state.workflow) {
       validateWorkflowMappings(state.config, state.workflow, { requireOutput: !rhWf });
     } else if (rhWf && usesSavedWorkflowJson(state.config, false)) {
-      throw new Error("Template enables saveWorkflowJson but api.json is missing");
+      throw new Error("Template requires workflow JSON — add api.json or set RunningHub API key to fetch by workflowId");
     }
     const inputs = flattenInputs(state.config.input || {});
     state.localValues = buildDefaults(inputs);
@@ -470,16 +617,22 @@ async function loadRunningHubNodes() {
   state.runningHubNodesLoading = true;
   state.runningHubNodesError = "";
   els.loadRunningHubNodesBtn.disabled = true;
-  setStatus("Loading RunningHub nodeInfoList...");
+  setStatus("Loading RunningHub app info...");
   try {
-    const nodes = await getWebappNodes(apiKey, webappId, state.abortController?.signal);
+    const webapp = await getWebappCallDemo(apiKey, webappId, state.abortController?.signal);
+    const nodes = webapp.nodeInfoList || [];
+    state.runningHubWebappName = webapp.webappName || "";
     state.runningHubNodes = nodes;
     state.runningHubNodeValues = buildRunningHubDefaults(nodes);
     if (isRunningHubAppMode()) renderRunningHubForm();
-    setStatus(nodes.length ? `Loaded ${nodes.length} RunningHub node(s)` : "RunningHub returned 0 nodes");
+    const appLabel = webapp.webappName ? `"${webapp.webappName}"` : webappId;
+    setStatus(nodes.length
+      ? `Loaded ${nodes.length} node(s) for ${appLabel}`
+      : `RunningHub returned 0 nodes for ${appLabel}`);
     return nodes;
   } catch (error) {
     state.runningHubNodes = [];
+    state.runningHubWebappName = "";
     state.runningHubNodeValues = {};
     state.runningHubNodesError = error.message;
     if (isRunningHubAppMode()) renderRunningHubForm();
@@ -492,17 +645,14 @@ async function loadRunningHubNodes() {
 }
 
 function switchExecutionMode(mode) {
-  const nextMode = mode === "runninghub" || mode === "runninghub-app"
-    ? "runninghub-app"
-    : mode === "runninghub-wf"
-      ? "runninghub-wf"
-      : "local";
+  const nextMode = normalizeExecutionMode(mode);
   if (isRunningHubAppMode()) state.runningHubNodeValues = state.values;
   else state.localValues = state.values;
   state.settings.executionMode = nextMode;
+  syncExecutionModeUi(nextMode);
+  syncModeVisibility();
   saveExecutionMode(nextMode);
   saveSettings();
-  syncModeVisibility();
   loadTemplates().then(() => {
     if (nextMode === "runninghub-app") {
       state.values = state.runningHubNodeValues;
@@ -574,7 +724,7 @@ async function runRunningHubWorkflow(selectionInfo) {
   });
   let importedCount = 0;
   for (const [index, output] of outputs.entries()) {
-    const { buffer } = await fetchRunningHubOutputBytes(output, state.abortController.signal);
+    const { buffer } = await fetchRunningHubOutputBytes(output, state.abortController.signal, { onStatus: setStatus });
     await importBufferAsLayer(buffer, outputFilename(output, index), selectionInfo);
     importedCount += 1;
   }
@@ -610,7 +760,11 @@ async function runRunningHubWfWorkflow(selectionInfo) {
     throw new Error("Template is missing runninghub.workflowId");
   }
   if (useSavedJson && !state.workflow) {
-    throw new Error("Template enables saveWorkflowJson but api.json is missing");
+    setStatus("Fetching RunningHub workflow JSON...");
+    state.workflow = await resolveTemplateWorkflow({ config: state.config, workflow: null });
+    if (!state.workflow) {
+      throw new Error("Template requires workflow JSON — add api.json or set RunningHub API key to fetch by workflowId");
+    }
   }
 
   const inputs = flattenInputs(state.config.input || {});
@@ -689,7 +843,7 @@ async function runRunningHubWfWorkflow(selectionInfo) {
   });
   let importedCount = 0;
   for (const [index, output] of outputs.entries()) {
-    const { buffer } = await fetchRunningHubOutputBytes(output, signal);
+    const { buffer } = await fetchRunningHubOutputBytes(output, signal, { onStatus: setStatus });
     await importBufferAsLayer(buffer, outputFilename(output, index), selectionInfo);
     importedCount += 1;
   }
@@ -776,7 +930,7 @@ async function runWorkflow() {
 
     let importedCount = 0;
     for (const output of outputs) {
-      const { buffer } = await fetchOutputBytes(output, state.abortController.signal);
+      const { buffer } = await fetchOutputBytes(output, state.abortController.signal, { onStatus: setStatus });
       await importBufferAsLayer(buffer, output.filename, selectionInfo);
       importedCount += 1;
     }
@@ -857,6 +1011,31 @@ function createField(labelText, control) {
   return field;
 }
 
+function createSecretField(labelText, input, toggleId) {
+  const field = document.createElement("div");
+  field.className = "field";
+  const label = document.createElement("span");
+  label.textContent = labelText;
+  const row = document.createElement("div");
+  row.className = "inputWithBtn";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.id = toggleId;
+  toggle.className = "iconButton";
+  row.append(input, toggle);
+  field.append(label, row);
+  return field;
+}
+
+function bindSecretToggle(toggleBtn, input, labels = {}) {
+  if (!toggleBtn || !input) return;
+  syncSecretToggleButton(toggleBtn, input, labels);
+  safeBind(toggleBtn, "click", () => {
+    input.type = input.type === "password" ? "text" : "password";
+    syncSecretToggleButton(toggleBtn, input, labels);
+  }, "toggle secret");
+}
+
 function findSettingsSection() {
   const serverInput = byId("serverUrlInput");
   let node = serverInput?.parentElement || null;
@@ -912,13 +1091,25 @@ function ensureSettingsBody() {
   if (!toggle) {
     toggle = document.createElement("button");
     toggle.id = "settingsToggleBtn";
-    toggle.className = "secondary compactButton";
+    toggle.className = "iconButton";
     toggle.type = "button";
+    toggle.textContent = "▲";
+    setSettingsToggleIcon(toggle, false);
     const header = settingsSection.querySelector(".sectionHeader");
     if (header) header.append(toggle);
     else settingsSection.insertBefore(toggle, body);
   }
   return body;
+}
+
+function ensureSettingsOrder(settingsBody) {
+  if (!settingsBody) return;
+  const nodes = [
+    findServerRow(),
+    byId("runningHubSettings"),
+    byId("localWorkflowSettings")
+  ].filter(node => node && node.parentElement === settingsBody);
+  for (const node of nodes) settingsBody.append(node);
 }
 
 function ensureLocalWorkflowSettings(settingsBody) {
@@ -936,9 +1127,7 @@ function ensureLocalWorkflowSettings(settingsBody) {
   }
 
   if (wrap.parentElement !== settingsBody) {
-    const serverRow = findServerRow();
-    if (serverRow?.nextSibling) settingsBody.insertBefore(wrap, serverRow.nextSibling);
-    else settingsBody.append(wrap);
+    settingsBody.append(wrap);
   }
 
   let header = wrap.querySelector(".compactHeader");
@@ -952,7 +1141,16 @@ function ensureLocalWorkflowSettings(settingsBody) {
   const title = header.querySelector("h2") || document.createElement("h2");
   title.textContent = "Workflow";
   if (!title.parentElement) header.insertBefore(title, header.firstChild);
-  if (folderBtn.parentElement !== header) header.append(folderBtn);
+
+  let actions = header.querySelector(".row");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "row";
+    header.append(actions);
+  }
+  const refreshBtn = byId("refreshTemplatesBtn");
+  if (refreshBtn && refreshBtn.parentElement !== actions) actions.append(refreshBtn);
+  if (folderBtn.parentElement !== actions) actions.append(folderBtn);
 
   const templateField = templateSelect.closest?.(".field") || templateSelect.parentElement;
   if (templateField && templateField.parentElement !== wrap) wrap.append(templateField);
@@ -960,13 +1158,29 @@ function ensureLocalWorkflowSettings(settingsBody) {
   if (oldSection && oldSection !== findSettingsSection() && !oldSection.contains(templateSelect) && !oldSection.contains(folderBtn)) {
     oldSection.remove();
   }
+
+  ensureSettingsOrder(settingsBody);
+}
+
+function initToolbarIcons() {
+  setButtonIcon(els.testConnectionBtn, "check", "Test connection");
+  setButtonIcon(els.refreshTemplatesBtn, "refresh", "Reload templates");
+  setSettingsToggleIcon(els.settingsToggleBtn, Boolean(els.settingsBody?.hidden));
+  bindSecretToggle(els.toggleServerUrlBtn, els.serverUrlInput, {
+    show: "Show server address",
+    hide: "Hide server address"
+  });
+  bindSecretToggle(els.toggleRunningHubApiKeyBtn, els.runningHubApiKeyInput, {
+    show: "Show API key",
+    hide: "Hide API key"
+  });
 }
 
 function setSettingsCollapsed(collapsed) {
   if (!els.settingsBody || !els.settingsToggleBtn) return;
   els.settingsBody.hidden = collapsed;
   els.settingsBody.style.display = collapsed ? "none" : "";
-  els.settingsToggleBtn.textContent = collapsed ? "Show" : "Hide";
+  setSettingsToggleIcon(els.settingsToggleBtn, collapsed);
   localStorage.setItem(SETTINGS_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
 
@@ -988,12 +1202,14 @@ function ensureSettingsControls() {
   if (!byId("executionModeSelect")) {
     const modeSelect = document.createElement("select");
     modeSelect.id = "executionModeSelect";
+    modeSelect.hidden = true;
+    modeSelect.setAttribute("aria-hidden", "true");
     modeSelect.innerHTML = `
       <option value="local">ComfyUI Local</option>
-      <option value="runninghub-app">RunningHub AI App</option>
       <option value="runninghub-wf">RunningHub Workflow</option>
+      <option value="runninghub-app">RunningHub AI App</option>
     `;
-    settingsBody.insertBefore(createField("Run mode", modeSelect), serverRow);
+    (byId("app") || document.body).append(modeSelect);
   }
 
   let wrap = byId("runningHubSettings");
@@ -1002,8 +1218,7 @@ function ensureSettingsControls() {
     wrap.id = "runningHubSettings";
     wrap.className = "runningHubSettings";
     wrap.hidden = true;
-    if (serverRow.nextSibling) settingsBody.insertBefore(wrap, serverRow.nextSibling);
-    else settingsBody.append(wrap);
+    settingsBody.append(wrap);
   }
 
   if (!byId("runningHubApiKeyInput")) {
@@ -1011,7 +1226,8 @@ function ensureSettingsControls() {
     apiInput.id = "runningHubApiKeyInput";
     apiInput.type = "password";
     apiInput.placeholder = "API key";
-    wrap.append(createField("RunningHub API Key", apiInput));
+    apiInput.autocomplete = "off";
+    wrap.append(createSecretField("RunningHub API Key", apiInput, "toggleRunningHubApiKeyBtn"));
   }
 
   let appWrap = byId("runningHubAppSettings");
@@ -1067,6 +1283,8 @@ function ensureSettingsControls() {
     loadBtn.textContent = "Load RunningHub Nodes";
     appWrap.append(loadBtn);
   }
+
+  ensureSettingsOrder(settingsBody);
 }
 
 function bindEvents() {
@@ -1075,12 +1293,22 @@ function bindEvents() {
   safeBind(els.testConnectionBtn, "click", testConnection, "test click");
   safeBind(els.settingsToggleBtn, "click", toggleSettings, "settings toggle");
   safeBind(els.executionModeSelect, "change", () => switchExecutionMode(els.executionModeSelect.value), "mode change");
+  bindExecutionModeTabs();
   safeBind(els.runningHubApiKeyInput, "input", saveSettings, "runninghub api key");
   safeBind(els.runningHubAppSelect, "change", () => {
     syncRunningHubAppUi();
     saveSettings();
+    if (isRunningHubAppMode()) {
+      state.runningHubWebappName = "";
+      loadRunningHubNodes().catch(error => setStatus(`RunningHub load failed: ${error.message}`));
+    }
   }, "runninghub app");
   safeBind(els.runningHubCustomWebappIdInput, "input", saveSettings, "runninghub custom webapp id");
+  safeBind(els.runningHubCustomWebappIdInput, "change", () => {
+    if (!isRunningHubAppMode()) return;
+    state.runningHubWebappName = "";
+    loadRunningHubNodes().catch(error => setStatus(`RunningHub load failed: ${error.message}`));
+  }, "runninghub custom webapp reload");
   safeBind(els.loadRunningHubNodesBtn, "click", () => loadRunningHubNodes(), "runninghub nodes");
   safeBind(els.refreshTemplatesBtn, "click", loadTemplates, "refresh click");
   safeBind(els.chooseTemplateFolderBtn, "click", chooseTemplateFolder, "folder click");
@@ -1093,11 +1321,14 @@ function initElements() {
   [
     "settingsBody",
     "settingsToggleBtn",
-    "serverUrlInput",
+    "executionModeToggle",
     "executionModeSelect",
+    "serverUrlInput",
+    "toggleServerUrlBtn",
     "runningHubSettings",
     "runningHubAppSettings",
     "runningHubApiKeyInput",
+    "toggleRunningHubApiKeyBtn",
     "runningHubAppSelect",
     "runningHubCustomWebappField",
     "runningHubCustomWebappIdInput",
@@ -1114,6 +1345,7 @@ function initElements() {
     "runBtn",
     "cancelBtn"
   ].forEach(id => { els[id] = byId(id); });
+  initToolbarIcons();
   setSettingsCollapsed(localStorage.getItem(SETTINGS_COLLAPSED_KEY) === "1");
 }
 
