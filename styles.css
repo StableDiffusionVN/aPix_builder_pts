@@ -1,11 +1,10 @@
 :root {
-  color-scheme: dark;
-  --bg: #1f1f1f;
-  --panel: #292929;
-  --panel-2: #333333;
-  --text: #f0f0f0;
-  --muted: #b8b8b8;
-  --line: #454545;
+  --bg: var(--uxp-host-background-color, #323232);
+  --panel: var(--uxp-host-widget-hover-background-color, #3f3f3f);
+  --panel-2: var(--uxp-host-widget-hover-background-color, #4a4a4a);
+  --text: var(--uxp-host-text-color, #f0f0f0);
+  --muted: var(--uxp-host-text-color-secondary, var(--uxp-host-label-text-color, #b8b8b8));
+  --line: var(--uxp-host-border-color, #5a5a5a);
   --accent: #4ea1ff;
   --danger: #e45d5d;
   --pad-x: 12px;
@@ -34,7 +33,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: var(--uxp-host-font-size, 12px)/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 #app {
@@ -197,7 +196,6 @@ h2 {
   border-top: 1px solid var(--line);
   border-bottom: 0;
   background: var(--bg);
-  box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.25);
 }
 
 label.field,
@@ -507,6 +505,18 @@ button:disabled {
   font-weight: 700;
 }
 
+#runBtn.is-running {
+  background: #3a7fc8;
+  border-color: #2f6fad;
+  color: #e8f4ff;
+  box-shadow: inset 0 0 0 1px rgba(120, 190, 255, 0.22);
+}
+
+#runBtn.is-running:disabled {
+  opacity: 0.92;
+  cursor: wait;
+}
+
 .secondary {
   color: var(--text);
 }
@@ -618,10 +628,22 @@ button:disabled {
   margin-top: 0;
 }
 
-.runningHubSettings button {
-  width: auto;
-  margin-top: 10px;
-  align-self: flex-start;
+.rhAppSelectRow {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.rhAppSelectRow select {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.rhAppSelectRow .iconButton {
+  flex: 0 0 auto;
+  margin: 0;
+  margin-left: 6px;
 }
 
 .menuSubField {
@@ -634,7 +656,7 @@ button:disabled {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--panel);
 }
 
 .menuSubField > .field {
@@ -699,7 +721,7 @@ button:disabled {
   object-fit: contain;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #141414;
+  background: var(--panel);
 }
 
 .statusText {

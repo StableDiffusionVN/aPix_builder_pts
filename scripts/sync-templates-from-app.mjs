@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
@@ -70,4 +70,33 @@ if (!total) {
 
 console.log(`Synced ${total} default template(s). Compiling YAML...`);
 await runCompileTemplates();
+
+const defaultAppsSource = path.join(APP_ROOT, "config/default-rh/apps.json");
+const defaultAppsTarget = path.join(PLUGIN_ROOT, "default-rh-apps.json");
+try {
+  const raw = await readFile(defaultAppsSource, "utf8");
+  await writeFile(defaultAppsTarget, raw, "utf8");
+  console.log(`Synced ${path.relative(APP_ROOT, defaultAppsSource)} -> ${path.relative(PLUGIN_ROOT, defaultAppsTarget)}`);
+} catch (error) {
+  console.warn(`Skip default RH apps sync: ${error.message}`);
+}
+
+const markSource = path.join(APP_ROOT, "public/sdvn-mark-light.png");
+const iconsDir = path.join(PLUGIN_ROOT, "icons");
+const markTarget = path.join(iconsDir, "sdvn-mark-black.png");
+try {
+  await mkdir(iconsDir, { recursive: true });
+  await cp(markSource, markTarget);
+  console.log(`Synced ${path.relative(APP_ROOT, markSource)} -> ${path.relative(PLUGIN_ROOT, markTarget)}`);
+  await new Promise((resolve, reject) => {
+    const child = spawn("npm", ["run", "generate:icons"], {
+      cwd: PLUGIN_ROOT,
+      stdio: "inherit"
+    });
+    child.on("exit", code => (code === 0 ? resolve() : reject(new Error(`generate:icons exited ${code}`))));
+  });
+} catch (error) {
+  console.warn(`Skip icon sync: ${error.message}`);
+}
+
 console.log("Done.");

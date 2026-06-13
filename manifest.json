@@ -2,7 +2,7 @@
   "manifestVersion": 5,
   "id": "com.apix.builder.photoshop",
   "name": "aPix Builder",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "main": "index.html",
   "host": {
     "app": "PS",
@@ -12,7 +12,7 @@
     {
       "width": 24,
       "height": 24,
-      "path": "icons/apix-icon-24.png",
+      "path": "icons/sdvn-icon-24.png",
       "scale": [1],
       "theme": ["dark", "darkest", "light", "lightest"],
       "species": ["generic"]
@@ -20,7 +20,7 @@
     {
       "width": 24,
       "height": 24,
-      "path": "icons/apix-icon-48.png",
+      "path": "icons/sdvn-icon-48.png",
       "scale": [2],
       "theme": ["dark", "darkest", "light", "lightest"],
       "species": ["generic"]
@@ -44,7 +44,7 @@
         {
           "width": 23,
           "height": 23,
-          "path": "icons/apix-panel-23.png",
+          "path": "icons/sdvn-panel-23.png",
           "scale": [1],
           "theme": ["dark", "darkest", "light", "lightest"],
           "species": ["generic"]
@@ -52,7 +52,7 @@
         {
           "width": 23,
           "height": 23,
-          "path": "icons/apix-panel-46.png",
+          "path": "icons/sdvn-panel-46.png",
           "scale": [2],
           "theme": ["dark", "darkest", "light", "lightest"],
           "species": ["generic"]

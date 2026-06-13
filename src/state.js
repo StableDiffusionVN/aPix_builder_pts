@@ -1,7 +1,9 @@
 export const BUILTIN_TEMPLATES = [
+  "sdvn-klein-upscale-ultimate",
   "klein-edit-image"
 ];
 export const BUILTIN_RH_TEMPLATES = [
+  "sdvn-klein-upscale-ultimate",
   "klein-edit-image-lora"
 ];
 import {
@@ -62,6 +64,14 @@ export function byId(id) {
 
 export function setStatus(message) {
   els.statusText.textContent = message;
+}
+
+export function syncRunButtonUi() {
+  if (!els.runBtn) return;
+  const busy = Boolean(state.running);
+  els.runBtn.textContent = busy ? "Run..." : "Run";
+  els.runBtn.classList.toggle("is-running", busy);
+  els.runBtn.setAttribute("aria-busy", busy ? "true" : "false");
 }
 
 export function setProgress(value, max) {

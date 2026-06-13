@@ -49,18 +49,17 @@
                 </div>
               </div>
               <div id="runningHubAppSettings" class="runningHubAppSettings" hidden>
-                <label class="field">
+                <label class="field rhAppField">
                   <span>Web App</span>
-                  <select id="runningHubAppSelect">
-                    <option value="2039924771751731201">SDVN Upscale</option>
-                    <option value="custom">Custom WebApp ID</option>
-                  </select>
+                  <div class="rhAppSelectRow">
+                    <select id="runningHubAppSelect"></select>
+                    <button id="loadRunningHubNodesBtn" class="iconButton" type="button" title="Reload RunningHub nodes" aria-label="Reload RunningHub nodes">↻</button>
+                  </div>
                 </label>
                 <label id="runningHubCustomWebappField" class="field" hidden>
                   <span>Custom WebApp ID</span>
                   <input id="runningHubCustomWebappIdInput" type="text" placeholder="2039924771751731201" />
                 </label>
-                <button id="loadRunningHubNodesBtn" class="secondary" type="button">Load RunningHub Nodes</button>
               </div>
             </div>
             <div id="localWorkflowSettings" class="localWorkflowSettings">

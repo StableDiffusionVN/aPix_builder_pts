@@ -1,11 +1,58 @@
 export const EXECUTION_MODE_KEY = "apix-builder:execution-mode:v1";
 export const RUNNINGHUB_SETTINGS_KEY = "apix-builder:runninghub:v1";
-export const DEFAULT_RH_WEBAPP_ID = "2039924771751731201";
-export const DEFAULT_RH_WF_ID = "2064644362323189762";
-export const RUNNINGHUB_BASE = "https://www.runninghub.ai";
-export const RUNNINGHUB_APP_OPTIONS = [
-  { id: DEFAULT_RH_WEBAPP_ID, name: "SDVN Upscale" }
+export const DEFAULT_RH_WEBAPP_IDS = [
+  "2039924771751731201",
+  "2064284416448491522"
 ];
+export const DEFAULT_RH_WEBAPP_ID = DEFAULT_RH_WEBAPP_IDS[0];
+/** Fallback workflow ID — bundled default is sdvn-klein-upscale-ultimate */
+export const DEFAULT_RH_WF_ID = "2063783833924890626";
+export const RUNNINGHUB_BASE = "https://www.runninghub.ai";
+
+export const DEFAULT_RH_APP_CANONICAL_NAMES = {
+  "2039924771751731201": "SDVN Klein Upscale",
+  "2064284416448491522": "SDVN Make Cosplay"
+};
+
+const BUILTIN_RH_APP_OPTIONS = DEFAULT_RH_WEBAPP_IDS.map(id => ({
+  id,
+  name: DEFAULT_RH_APP_CANONICAL_NAMES[id] || id
+}));
+
+export let RUNNINGHUB_APP_OPTIONS = [...BUILTIN_RH_APP_OPTIONS];
+
+export function normalizeRhAppEntry(entry) {
+  const id = String(entry?.id || "").trim();
+  if (!id) return null;
+  const name = String(entry?.name || "").trim() || id;
+  return { id, name };
+}
+
+export function normalizeRhAppOptions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  return raw
+    .map(normalizeRhAppEntry)
+    .filter(entry => {
+      if (!entry || seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    });
+}
+
+export function setRunningHubAppOptions(apps) {
+  const normalized = normalizeRhAppOptions(apps).map(app => ({
+    ...app,
+    name: DEFAULT_RH_APP_CANONICAL_NAMES[app.id] || app.name
+  }));
+  if (normalized.length) {
+    RUNNINGHUB_APP_OPTIONS = normalized;
+  }
+}
+
+export function isDefaultRhWebapp(id) {
+  return DEFAULT_RH_WEBAPP_IDS.includes(String(id || "").trim());
+}
 
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;

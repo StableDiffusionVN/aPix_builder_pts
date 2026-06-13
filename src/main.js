@@ -10,6 +10,7 @@ import {
   byId,
   setStatus,
   setProgress,
+  syncRunButtonUi,
   setImageInputValue,
   readSettings,
   saveSettings,
@@ -73,6 +74,7 @@ import {
   parsePromptTips,
   prepareNodeInfoList,
   RUNNINGHUB_APP_OPTIONS,
+  setRunningHubAppOptions,
   runningHubTaskOptions,
   saveExecutionMode,
   saveRunningHubSettings,
@@ -248,8 +250,49 @@ function syncModeVisibility() {
   els.testConnectionBtn.disabled = runningHub;
   els.templateSelect.disabled = runningHubApp;
   els.chooseTemplateFolderBtn.disabled = runningHubApp;
-  els.runBtn.textContent = "Run";
+  syncRunButtonUi();
   syncRunningHubAppUi();
+}
+
+function loadBundledDefaultRhApps() {
+  try {
+    const raw = fs.readFileSync("plugin:default-rh-apps.json", "utf8");
+    setRunningHubAppOptions(JSON.parse(raw));
+  } catch (error) {
+    console.warn("Using built-in RunningHub default app list", error);
+  }
+}
+
+function syncRunningHubAppSelect() {
+  const select = els.runningHubAppSelect || byId("runningHubAppSelect");
+  if (!select) return;
+  const previous = select.value;
+  const savedWebappId = state.settings.runningHub?.webappId?.trim() || DEFAULT_RH_WEBAPP_ID;
+  select.innerHTML = "";
+  const seen = new Set();
+  for (const app of RUNNINGHUB_APP_OPTIONS) {
+    if (!app?.id || seen.has(app.id)) continue;
+    seen.add(app.id);
+    const option = document.createElement("option");
+    option.value = app.id;
+    option.textContent = app.name;
+    select.append(option);
+  }
+  const customOption = document.createElement("option");
+  customOption.value = "custom";
+  customOption.textContent = "Custom WebApp ID";
+  select.append(customOption);
+  const knownPrevious = RUNNINGHUB_APP_OPTIONS.some(app => app.id === previous);
+  const knownSaved = RUNNINGHUB_APP_OPTIONS.some(app => app.id === savedWebappId);
+  if (previous === "custom") {
+    select.value = "custom";
+  } else if (knownPrevious) {
+    select.value = previous;
+  } else if (knownSaved) {
+    select.value = savedWebappId;
+  } else {
+    select.value = DEFAULT_RH_WEBAPP_ID;
+  }
 }
 
 function syncRunningHubAppUi() {
@@ -858,11 +901,13 @@ async function runWorkflow() {
     return;
   }
   state.running = true;
+  syncRunButtonUi();
   if (!isRunningHubAppMode() && (!state.config || (!state.workflow && !isRunningHubWfMode()))) {
     await selectTemplate(selectedTemplateId());
     if (!state.config) {
       setStatus("Select a workflow first");
       state.running = false;
+      syncRunButtonUi();
       return;
     }
   }
@@ -949,6 +994,7 @@ async function runWorkflow() {
     state.activePromptId = null;
     state.activeRunningHubTaskId = null;
     state.running = false;
+    syncRunButtonUi();
   }
 }
 
@@ -991,6 +1037,7 @@ function startRunFromUi(event) {
     state.abortController = null;
     state.activePromptId = null;
     state.running = false;
+    syncRunButtonUi();
   });
 }
 
@@ -1000,6 +1047,65 @@ function safeBind(element, eventName, handler, label) {
   } catch (error) {
     console.warn(`Cannot bind ${label || eventName}`, error);
   }
+}
+
+function createRhAppPickerField() {
+  const field = document.createElement("label");
+  field.className = "field rhAppField";
+  const label = document.createElement("span");
+  label.textContent = "Web App";
+  const row = document.createElement("div");
+  row.className = "rhAppSelectRow";
+  const appSelect = document.createElement("select");
+  appSelect.id = "runningHubAppSelect";
+  const loadBtn = document.createElement("button");
+  loadBtn.id = "loadRunningHubNodesBtn";
+  loadBtn.className = "iconButton";
+  loadBtn.type = "button";
+  row.append(appSelect, loadBtn);
+  field.append(label, row);
+  return field;
+}
+
+function ensureRunningHubAppPickerLayout(appWrap) {
+  let appSelect = byId("runningHubAppSelect");
+  let loadBtn = byId("loadRunningHubNodesBtn");
+
+  if (!loadBtn) {
+    loadBtn = document.createElement("button");
+    loadBtn.id = "loadRunningHubNodesBtn";
+    loadBtn.type = "button";
+    loadBtn.className = "iconButton";
+  }
+
+  let row = appSelect?.closest?.(".rhAppSelectRow");
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "rhAppSelectRow";
+    if (!appSelect) {
+      appSelect = document.createElement("select");
+      appSelect.id = "runningHubAppSelect";
+    }
+    const oldField = appSelect.closest?.(".field");
+    if (oldField?.parentElement === appWrap && oldField.classList.contains("rhAppField")) {
+      oldField.querySelector(".rhAppSelectRow")?.remove();
+      row.append(appSelect, loadBtn);
+      oldField.append(row);
+    } else {
+      if (oldField?.parentElement === appWrap) oldField.remove();
+      loadBtn.remove();
+      const field = createRhAppPickerField();
+      appWrap.prepend(field);
+      appSelect = byId("runningHubAppSelect");
+      loadBtn = byId("loadRunningHubNodesBtn");
+    }
+  } else if (!row.contains(loadBtn)) {
+    row.append(loadBtn);
+  }
+
+  loadBtn.className = "iconButton";
+  setButtonIcon(loadBtn, "refresh", "Reload RunningHub nodes");
+  syncRunningHubAppSelect();
 }
 
 function createField(labelText, control) {
@@ -1165,6 +1271,7 @@ function ensureLocalWorkflowSettings(settingsBody) {
 function initToolbarIcons() {
   setButtonIcon(els.testConnectionBtn, "check", "Test connection");
   setButtonIcon(els.refreshTemplatesBtn, "refresh", "Reload templates");
+  setButtonIcon(els.loadRunningHubNodesBtn, "refresh", "Reload RunningHub nodes");
   setSettingsToggleIcon(els.settingsToggleBtn, Boolean(els.settingsBody?.hidden));
   bindSecretToggle(els.toggleServerUrlBtn, els.serverUrlInput, {
     show: "Show server address",
@@ -1245,20 +1352,9 @@ function ensureSettingsControls() {
   }
 
   if (!byId("runningHubAppSelect")) {
-    const appSelect = document.createElement("select");
-    appSelect.id = "runningHubAppSelect";
-    for (const app of RUNNINGHUB_APP_OPTIONS) {
-      const option = document.createElement("option");
-      option.value = app.id;
-      option.textContent = app.name;
-      appSelect.append(option);
-    }
-    const customOption = document.createElement("option");
-    customOption.value = "custom";
-    customOption.textContent = "Custom WebApp ID";
-    appSelect.append(customOption);
-    appWrap.append(createField("Web App", appSelect));
+    appWrap.prepend(createRhAppPickerField());
   }
+  ensureRunningHubAppPickerLayout(appWrap);
 
   if (!byId("runningHubCustomWebappIdInput")) {
     const customInput = document.createElement("input");
@@ -1273,15 +1369,6 @@ function ensureSettingsControls() {
     const customInput = byId("runningHubCustomWebappIdInput");
     const customField = customInput.parentElement;
     if (customField) customField.id = "runningHubCustomWebappField";
-  }
-
-  if (!byId("loadRunningHubNodesBtn")) {
-    const loadBtn = document.createElement("button");
-    loadBtn.id = "loadRunningHubNodesBtn";
-    loadBtn.className = "secondary";
-    loadBtn.type = "button";
-    loadBtn.textContent = "Load RunningHub Nodes";
-    appWrap.append(loadBtn);
   }
 
   ensureSettingsOrder(settingsBody);
@@ -1317,6 +1404,7 @@ function bindEvents() {
 }
 
 function initElements() {
+  loadBundledDefaultRhApps();
   ensureSettingsControls();
   [
     "settingsBody",
