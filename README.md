@@ -1,10 +1,28 @@
-# aPix Builder — Photoshop Plugin · v1.0
+# aPix Builder — Photoshop Plugin · v1.0 (alpha)
+
+**Website:** [apix.sdvn.vn](https://apix.sdvn.vn)
 
 **English:** UXP panel for Adobe Photoshop that runs ComfyUI and RunningHub workflows from the active document. Select a template, fill parameters, send images from Photoshop, run the workflow, and import results as new layers.
 
 **Tiếng Việt:** Plugin UXP cho Adobe Photoshop — chạy workflow ComfyUI và RunningHub trực tiếp từ document đang mở. Chọn template, điền tham số, gửi ảnh từ Photoshop, chạy workflow và nhận kết quả về layer mới.
 
-Companion to the [aPix Builder](https://github.com/StableDiffusionVN/aPix_Builder) web app. Templates can be synced from the parent repo via `npm run sync:templates`.
+Companion to the [aPix Builder](https://github.com/StableDiffusionVN/aPix_Builder) web/desktop app (v1.0.0). Templates can be synced from the parent repo via `npm run sync:templates`.
+
+## Releases
+
+Phiên bản hiện tại: **v1 alpha** · tương thích **aPix Builder 1.0.0**
+
+| File | Nền tảng | Cài đặt |
+| --- | --- | --- |
+| [`aPixBuilder_v1.ccx`](https://github.com/StableDiffusionVN/aPix_builder_pts/releases) | Adobe Photoshop 24+ (UXP) | Tải `.ccx` từ GitHub Releases → double-click hoặc cài qua UXP Developer Tool |
+
+**English:** Download `aPixBuilder_v1.ccx` from [GitHub Releases](https://github.com/StableDiffusionVN/aPix_builder_pts/releases), install the package, then open **Plugins → aPix Builder** in Photoshop.
+
+```bash
+# Build CCX locally (optional)
+npm run prepare:package
+# Package output: package/aPixBuilder_v1.ccx
+```
 
 ## Requirements
 
