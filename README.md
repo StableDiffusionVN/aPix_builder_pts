@@ -1,4 +1,4 @@
-# aPix Builder — Photoshop Plugin · v1.0 (alpha)
+# aPix Builder — Photoshop Plugin · v1 chính thức
 
 **Website:** [apix.sdvn.vn](https://apix.sdvn.vn)
 
@@ -10,7 +10,7 @@ Companion to the [aPix Builder](https://github.com/StableDiffusionVN/aPix_Builde
 
 ## Releases
 
-Phiên bản hiện tại: **v1 alpha** · tương thích **aPix Builder 1.0.0**
+Phiên bản hiện tại: **v1 chính thức** · tương thích **aPix Builder 1.0.0**
 
 | File | Nền tảng | Cài đặt |
 | --- | --- | --- |
