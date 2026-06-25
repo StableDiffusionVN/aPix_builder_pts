@@ -457,7 +457,34 @@ function delay(ms, signal) {
   });
 }
 
+// Huỷ task trên server RunningHub (best-effort) — cần taskId; tránh để task chạy tiếp khi user dừng.
+export async function cancelRunningHubTask(apiKey, taskId) {
+  const id = String(taskId || "").trim();
+  if (!apiKey || !id) return;
+  try {
+    await fetch(`${RUNNINGHUB_BASE}/task/openapi/cancel`, {
+      method: "POST",
+      headers: rhHeaders(apiKey, { "content-type": "application/json" }),
+      body: JSON.stringify({ apiKey, taskId: id })
+    });
+  } catch {
+    // best-effort
+  }
+}
+
 export async function waitForTaskOutputs(apiKey, taskId, options = {}) {
+  const { signal } = options;
+  try {
+    return await pollTaskOutputs(apiKey, taskId, options);
+  } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError" || /cancelled/i.test(String(error?.message || ""))) {
+      void cancelRunningHubTask(apiKey, taskId);
+    }
+    throw error;
+  }
+}
+
+async function pollTaskOutputs(apiKey, taskId, options = {}) {
   const {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     pollMs = DEFAULT_POLL_MS,
