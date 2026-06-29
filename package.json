@@ -15,5 +15,8 @@
   "devDependencies": {
     "esbuild": "^0.25.5",
     "yaml": "^2.6.1"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
   }
 }

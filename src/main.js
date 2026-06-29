@@ -96,6 +96,7 @@ import {
 } from "./lib/templateFolder.js";
 
 import YAML from "yaml";
+import { templatesFromZipEntries } from "./lib/zipImport.js";
 
 const fs = require("fs");
 const { storage } = require("uxp");
@@ -250,6 +251,7 @@ function syncModeVisibility() {
   els.testConnectionBtn.disabled = runningHub;
   els.templateSelect.disabled = runningHubApp;
   els.chooseTemplateFolderBtn.disabled = runningHubApp;
+  if (els.chooseTemplateZipBtn) els.chooseTemplateZipBtn.disabled = runningHubApp;
   syncRunButtonUi();
   syncRunningHubAppUi();
 }
@@ -554,6 +556,30 @@ async function chooseTemplateFolder() {
     setStatus(`Loaded ${templates.length} template(s) from ${folder.name}`);
   } catch (error) {
     setStatus(`Cannot load folder: ${error.message}`);
+  }
+}
+
+async function chooseTemplateZip() {
+  try {
+    const file = await storage.localFileSystem.getFileForOpening({ types: ["zip"] });
+    if (!file) return;
+    const { unzipSync } = await import("fflate");
+    const buffer = await file.read({ format: storage.formats.binary });
+    const entries = unzipSync(new Uint8Array(buffer));
+    const scope = currentTemplateScope();
+    const templates = templatesFromZipEntries(entries, file.name).filter(t => t.scope === scope);
+    if (!templates.length) {
+      throw new Error(scope === "runninghub-wf"
+        ? "No RunningHub Workflow templates in .zip (missing runninghub.workflowId)"
+        : "No local ComfyUI templates in .zip");
+    }
+    state.templates = state.templates
+      .filter(item => item.source !== "zip" || item.scope !== scope)
+      .concat(templates);
+    await refreshTemplateSelect(templates[0].id);
+    setStatus(`Loaded ${templates.length} template(s) from ${file.name}`);
+  } catch (error) {
+    setStatus(`Cannot load .zip: ${error.message}`);
   }
 }
 
@@ -1399,6 +1425,7 @@ function bindEvents() {
   safeBind(els.loadRunningHubNodesBtn, "click", () => loadRunningHubNodes(), "runninghub nodes");
   safeBind(els.refreshTemplatesBtn, "click", loadTemplates, "refresh click");
   safeBind(els.chooseTemplateFolderBtn, "click", chooseTemplateFolder, "folder click");
+  safeBind(els.chooseTemplateZipBtn, "click", chooseTemplateZip, "zip click");
   safeBind(els.templateSelect, "change", () => selectTemplate(selectedTemplateId()), "template change");
   safeBind(els.cancelBtn, "click", cancelRun, "cancel click");
 }
@@ -1425,6 +1452,7 @@ function initElements() {
     "testConnectionBtn",
     "refreshTemplatesBtn",
     "chooseTemplateFolderBtn",
+    "chooseTemplateZipBtn",
     "templateSelect",
     "workflowTitle",
     "dynamicForm",
