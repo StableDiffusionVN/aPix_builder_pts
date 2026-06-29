@@ -94,6 +94,7 @@
   var comfy_exports = {};
   __export(comfy_exports, {
     DYNAMIC_TYPE_REGISTRY: () => DYNAMIC_TYPE_REGISTRY,
+    applySdvnAugmentation: () => applySdvnAugmentation,
     base64ToBlob: () => base64ToBlob,
     canonicalDynamicType: () => canonicalDynamicType,
     collectOutputs: () => collectOutputs,
@@ -107,6 +108,7 @@
     parseDataUrl: () => parseDataUrl,
     queuePrompt: () => queuePrompt,
     resolveWorkflowInput: () => resolveWorkflowInput,
+    sdvnAugmentTypes: () => sdvnAugmentTypes,
     setWorkflowValue: () => setWorkflowValue,
     uploadImageToComfy: () => uploadImageToComfy,
     waitForPrompt: () => waitForPrompt,
@@ -442,11 +444,49 @@
           }
         }
       }
+      await applySdvnAugmentation();
     } catch (error) {
       console.warn("fetchServerChoices failed", error);
     }
   }
-  var DYNAMIC_TYPE_REGISTRY, DYNAMIC_TYPE_ALIAS_MAP, sessionClientId, promptListeners, socketUrl;
+  async function fetchSdvnLibraryNames(type) {
+    if (sdvnLibCache[type]) return sdvnLibCache[type];
+    const url = SDVN_LIB_URLS[type];
+    if (!url) return [];
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return [];
+      const obj = await response.json();
+      const names = [...new Set(Object.keys(obj || {}).filter((name) => typeof name === "string" && name.trim()))];
+      sdvnLibCache[type] = names;
+      return names;
+    } catch {
+      return [];
+    }
+  }
+  function sdvnAugmentTypes(input, workflow) {
+    const out = /* @__PURE__ */ new Set();
+    if (!workflow || typeof workflow !== "object") return out;
+    for (const item of Object.values(input || {})) {
+      const kind = canonicalDynamicType(item?.ui?.type);
+      if (kind !== "checkpoints" && kind !== "loras") continue;
+      const idStr = Array.isArray(item?.id) ? String(item.id[0] || "") : String(item?.id || "");
+      if (!idStr) continue;
+      const nodeId = idStr.split("-")[0];
+      const classType = nodeId ? workflow?.[nodeId]?.class_type : null;
+      if (typeof classType === "string" && /sdvn/i.test(classType)) out.add(kind);
+    }
+    return out;
+  }
+  async function applySdvnAugmentation() {
+    const next = {};
+    for (const type of sdvnAugmentTypes(state.config?.input, state.workflow)) {
+      const extra = await fetchSdvnLibraryNames(type);
+      if (extra.length) next[type] = extra;
+    }
+    state.sdvnChoices = next;
+  }
+  var DYNAMIC_TYPE_REGISTRY, DYNAMIC_TYPE_ALIAS_MAP, sessionClientId, promptListeners, socketUrl, SDVN_LIB_URLS, sdvnLibCache;
   var init_comfy = __esm({
     "src/services/comfy.js"() {
       init_state();
@@ -475,6 +515,11 @@
       sessionClientId = null;
       promptListeners = /* @__PURE__ */ new Map();
       socketUrl = null;
+      SDVN_LIB_URLS = {
+        checkpoints: "https://raw.githubusercontent.com/StableDiffusionVN/SDVN_Comfy_node/refs/heads/main/model_lib.json",
+        loras: "https://raw.githubusercontent.com/StableDiffusionVN/SDVN_Comfy_node/refs/heads/main/lora_lib.json"
+      };
+      sdvnLibCache = {};
     }
   });
 
@@ -853,7 +898,30 @@
       }, { once: true });
     });
   }
+  async function cancelRunningHubTask(apiKey, taskId) {
+    const id = String(taskId || "").trim();
+    if (!apiKey || !id) return;
+    try {
+      await fetch(`${RUNNINGHUB_BASE}/task/openapi/cancel`, {
+        method: "POST",
+        headers: rhHeaders(apiKey, { "content-type": "application/json" }),
+        body: JSON.stringify({ apiKey, taskId: id })
+      });
+    } catch {
+    }
+  }
   async function waitForTaskOutputs(apiKey, taskId, options = {}) {
+    const { signal } = options;
+    try {
+      return await pollTaskOutputs(apiKey, taskId, options);
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError" || /cancelled/i.test(String(error?.message || ""))) {
+        void cancelRunningHubTask(apiKey, taskId);
+      }
+      throw error;
+    }
+  }
+  async function pollTaskOutputs(apiKey, taskId, options = {}) {
     const {
       timeoutMs = DEFAULT_TIMEOUT_MS,
       pollMs = DEFAULT_POLL_MS,
@@ -1075,6 +1143,7 @@
         imageSources: {},
         imagePreviews: {},
         serverChoices: {},
+        sdvnChoices: {},
         runningHubNodes: [],
         runningHubWebappName: "",
         runningHubNodeValues: {},
@@ -1661,6 +1730,12 @@
   init_state();
   init_comfy();
   var { storage: storage3 } = __require("uxp");
+  function resolvedServerChoices(serverType) {
+    const base = Array.isArray(state.serverChoices[serverType]) ? state.serverChoices[serverType] : [];
+    const extra = Array.isArray(state.sdvnChoices?.[serverType]) ? state.sdvnChoices[serverType] : [];
+    if (!extra.length) return base;
+    return [.../* @__PURE__ */ new Set([...base, ...extra])];
+  }
   function markdownToHtml(text) {
     return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="#" data-href="${url}" style="color:var(--accent)">${label}</a>`).replace(/\n/g, "<br>");
   }
@@ -1668,7 +1743,7 @@
     const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
     for (const select of selects) {
       const serverType = select.dataset.serverType;
-      const choices = state.serverChoices[serverType];
+      const choices = resolvedServerChoices(serverType);
       if (!choices?.length) continue;
       const current = select.value;
       select.innerHTML = "";
@@ -1945,7 +2020,7 @@
   function renderSelectField(key, ui, type) {
     const select = document.createElement("select");
     const serverType = canonicalDynamicType(type);
-    const serverChoices = serverType ? state.serverChoices[serverType] : null;
+    const serverChoices = serverType ? resolvedServerChoices(serverType) : null;
     const menuOptions = menuChoiceOptions(ui);
     const parsedChoices = Array.isArray(ui.choices) ? parseMenuChoices(ui.choices, menuOptions) : [];
     const choices = serverChoices?.length ? serverChoices.map((value) => ({ value, label: value })) : parsedChoices.length ? parsedChoices : Array.isArray(ui.choices) ? ui.choices.map((value) => ({ value: String(value), label: String(value) })) : ui.value ? [{ value: String(ui.value), label: String(ui.value) }] : [];

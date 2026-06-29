@@ -4,8 +4,29 @@ import {
   resolveWorkflowInput,
   isLocalHost,
   normalizeComfyTarget,
-  parseDataUrl
+  parseDataUrl,
+  sdvnAugmentTypes
 } from "../src/services/comfy.js";
+
+test("sdvnAugmentTypes phát hiện checkpoints/loras khi node loader chứa SDVN", () => {
+  const input = {
+    checkpoint: { id: "53-Ckpt_name", ui: { type: "checkpoints" } },
+    lora: { id: "54-lora_name", ui: { type: "loras" } },
+    vae: { id: "10-vae_name", ui: { type: "vae" } }
+  };
+  const workflow = {
+    "53": { class_type: "SDVN Load Checkpoint" },
+    "54": { class_type: "SDVN Load Lora" },
+    "10": { class_type: "VAELoader" }
+  };
+  assert.deepEqual([...sdvnAugmentTypes(input, workflow)].sort(), ["checkpoints", "loras"]);
+});
+
+test("sdvnAugmentTypes không bơm khi node không phải SDVN", () => {
+  const input = { checkpoint: { id: "1-Ckpt_name", ui: { type: "checkpoints" } } };
+  const workflow = { "1": { class_type: "CheckpointLoaderSimple" } };
+  assert.equal(sdvnAugmentTypes(input, workflow).size, 0);
+});
 
 const sampleWorkflow = {
   "23": {

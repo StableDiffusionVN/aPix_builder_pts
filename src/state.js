@@ -43,6 +43,7 @@ export const state = {
   imageSources: {},
   imagePreviews: {},
   serverChoices: {},
+  sdvnChoices: {},
   runningHubNodes: [],
   runningHubWebappName: "",
   runningHubNodeValues: {},

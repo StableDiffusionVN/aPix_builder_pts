@@ -7,6 +7,14 @@ import { readUxFileAsDataUrl } from "../utils/files.js";
 
 const { storage } = require("uxp");
 
+// Danh sách model cho 1 type: server quét được + bổ sung từ thư viện SDVN (nếu node loader là SDVN).
+function resolvedServerChoices(serverType) {
+  const base = Array.isArray(state.serverChoices[serverType]) ? state.serverChoices[serverType] : [];
+  const extra = Array.isArray(state.sdvnChoices?.[serverType]) ? state.sdvnChoices[serverType] : [];
+  if (!extra.length) return base;
+  return [...new Set([...base, ...extra])];
+}
+
 function markdownToHtml(text) {
   return String(text)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -21,7 +29,7 @@ export function updateServerSelects() {
   const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
   for (const select of selects) {
     const serverType = select.dataset.serverType;
-    const choices = state.serverChoices[serverType];
+    const choices = resolvedServerChoices(serverType);
     if (!choices?.length) continue;
     const current = select.value;
     select.innerHTML = "";
@@ -297,7 +305,7 @@ function renderNumberField(key, ui, type) {
 function renderSelectField(key, ui, type) {
   const select = document.createElement("select");
   const serverType = canonicalDynamicType(type);
-  const serverChoices = serverType ? state.serverChoices[serverType] : null;
+  const serverChoices = serverType ? resolvedServerChoices(serverType) : null;
   const menuOptions = menuChoiceOptions(ui);
   const parsedChoices = Array.isArray(ui.choices) ? parseMenuChoices(ui.choices, menuOptions) : [];
   const choices = serverChoices?.length ? serverChoices.map(value => ({ value, label: value }))
