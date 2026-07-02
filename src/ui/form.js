@@ -16,107 +16,6 @@ function resolvedServerChoices(serverType) {
   return [...new Set(["None", ...base, ...extra])];
 }
 
-// Dropdown gõ để lọc (thay <select>) — dùng cho field dropdown/menu/dynamic và menu-sub.
-function createSearchSelect({ choices, value, placeholder = "", onChange }) {
-  const root = document.createElement("div");
-  root.className = "searchSelect";
-  const trigger = document.createElement("button");
-  trigger.type = "button";
-  trigger.className = "searchSelectTrigger";
-  const triggerText = document.createElement("span");
-  triggerText.className = "searchSelectTriggerText";
-  const chevron = document.createElement("span");
-  chevron.className = "searchSelectChevron";
-  chevron.textContent = "▾";
-  trigger.append(triggerText, chevron);
-  const panel = document.createElement("div");
-  panel.className = "searchSelectPanel";
-  panel.hidden = true;
-  const search = document.createElement("input");
-  search.type = "text";
-  search.className = "searchSelectInput";
-  search.placeholder = "Type to search...";
-  const list = document.createElement("div");
-  list.className = "searchSelectList";
-  panel.append(search, list);
-  root.append(trigger, panel);
-
-  let allChoices = (choices || []).map(c => ({ value: String(c.value), label: String(c.label ?? c.value) }));
-  let current = value != null ? String(value) : "";
-
-  const renderTrigger = () => {
-    const found = allChoices.find(c => c.value === current);
-    triggerText.textContent = found ? found.label : (placeholder || "");
-    triggerText.classList.toggle("isPlaceholder", !found);
-  };
-
-  const renderList = () => {
-    const q = search.value.trim().toLowerCase();
-    list.innerHTML = "";
-    const filtered = !q
-      ? allChoices
-      : allChoices.filter(c => c.label.toLowerCase().includes(q) || c.value.toLowerCase().includes(q));
-    if (!filtered.length) {
-      const empty = document.createElement("div");
-      empty.className = "searchSelectEmpty";
-      empty.textContent = "No matching choices";
-      list.append(empty);
-      return;
-    }
-    for (const c of filtered) {
-      const opt = document.createElement("button");
-      opt.type = "button";
-      opt.className = "searchSelectOption" + (c.value === current ? " isSelected" : "");
-      opt.textContent = c.label;
-      opt.addEventListener("click", () => {
-        close();
-        if (c.value !== current) {
-          current = c.value;
-          renderTrigger();
-          onChange?.(current);
-        }
-      });
-      list.append(opt);
-    }
-  };
-
-  function handleOutside(event) {
-    if (!root.contains(event.target)) close();
-  }
-  function open() {
-    if (!allChoices.length) return;
-    panel.hidden = false;
-    search.value = "";
-    renderList();
-    document.addEventListener("click", handleOutside, true);
-    try { search.focus(); } catch {}
-  }
-  function close() {
-    panel.hidden = true;
-    document.removeEventListener("click", handleOutside, true);
-  }
-  trigger.addEventListener("click", () => (panel.hidden ? open() : close()));
-  search.addEventListener("input", renderList);
-  search.addEventListener("keydown", event => {
-    if (event.key === "Escape") close();
-    if (event.key === "Enter") list.querySelector(".searchSelectOption")?.click();
-  });
-
-  const api = {
-    root,
-    get value() { return current; },
-    setChoices(nextChoices, nextValue) {
-      allChoices = (nextChoices || []).map(c => ({ value: String(c.value), label: String(c.label ?? c.value) }));
-      if (nextValue != null) current = String(nextValue);
-      if (!allChoices.some(c => c.value === current)) current = allChoices[0]?.value ?? "";
-      renderTrigger();
-      if (!panel.hidden) renderList();
-    }
-  };
-  root.__searchSelect = api;
-  renderTrigger();
-  return api;
-}
 
 function markdownToHtml(text) {
   return String(text)
@@ -129,18 +28,22 @@ function markdownToHtml(text) {
 }
 
 export function updateServerSelects() {
-  const pickers = els.dynamicForm.querySelectorAll(".searchSelect[data-server-type]");
-  for (const root of pickers) {
-    const api = root.__searchSelect;
-    const choices = resolvedServerChoices(root.dataset.serverType);
-    if (!choices?.length || !api) continue;
-    const current = api.value;
-    api.setChoices(
-      choices.map(value => ({ value, label: value })),
-      choices.includes(current) ? current : choices[0]
-    );
-    const key = root.dataset.stateKey;
-    if (key) state.values[key] = api.value;
+  const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
+  for (const select of selects) {
+    const serverType = select.dataset.serverType;
+    const choices = resolvedServerChoices(serverType);
+    if (!choices?.length) continue;
+    const current = select.value;
+    select.innerHTML = "";
+    for (const choice of choices) {
+      const opt = document.createElement("option");
+      opt.value = choice;
+      opt.textContent = choice;
+      select.append(opt);
+    }
+    select.value = choices.includes(current) ? current : choices[0];
+    const key = select.dataset.stateKey;
+    if (key) state.values[key] = select.value;
   }
 }
 
@@ -177,10 +80,19 @@ function renderDynamicItem(item) {
   if (!item.id) return null;
 
   const key = normalizeId(item.id);
-  const field = document.createElement("label");
-  field.className = "field";
   const label = document.createElement("span");
   label.textContent = ui.label || item.key;
+
+  // Boolean: hàng riêng dạng div (flex row chắc chắn trong UXP) — nhãn trái, nút gạt phải.
+  if (type === "boolean") {
+    const row = document.createElement("div");
+    row.className = "field booleanFieldRow";
+    row.append(label, renderBooleanField(key));
+    return row;
+  }
+
+  const field = document.createElement("label");
+  field.className = "field";
   field.append(label);
 
   const isSlider = type === "slider" || ui.display === "slider";
@@ -220,9 +132,6 @@ function renderDynamicItem(item) {
     field.append(renderRadioField(key, ui));
   } else if (["dropdown", "menu"].includes(type) || isDynamic) {
     field.append(renderSelectField(key, ui, type));
-  } else if (type === "boolean") {
-    field.classList.add("field--inline");
-    field.append(renderBooleanField(key));
   } else if (type === "checkbox") {
     field.classList.add("field--inline");
     field.append(renderCheckboxField(key));
@@ -269,17 +178,22 @@ function renderMenuSubField(item) {
   field.className = "field";
   const label = document.createElement("span");
   label.textContent = ui.label || item.key;
-  const picker = createSearchSelect({
-    choices: options,
-    value: options.some(option => option.value === menuValue) ? menuValue : (options[0]?.value || ""),
-    placeholder: options.length ? "" : "No choices",
-    onChange: next => {
-      state.values[key] = next;
-      renderActiveSubs();
-    }
-  });
-  state.values[key] = picker.value;
-  field.append(label, picker.root);
+  const select = document.createElement("select");
+  if (!options.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No choices";
+    select.append(option);
+  }
+  for (const choice of options) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    select.append(option);
+  }
+  select.value = options.some(option => option.value === menuValue) ? menuValue : (options[0]?.value || "");
+  state.values[key] = select.value;
+  field.append(label, select);
   section.append(field);
 
   const subWrap = document.createElement("div");
@@ -299,6 +213,10 @@ function renderMenuSubField(item) {
       if (node) subWrap.append(node);
     }
   };
+  select.addEventListener("change", () => {
+    state.values[key] = select.value;
+    renderActiveSubs();
+  });
   renderActiveSubs();
   section.append(subWrap);
   return section;
@@ -393,6 +311,7 @@ function renderNumberField(key, ui, type) {
 }
 
 function renderSelectField(key, ui, type) {
+  const select = document.createElement("select");
   const serverType = canonicalDynamicType(type);
   const serverChoices = serverType ? resolvedServerChoices(serverType) : null;
   const menuOptions = menuChoiceOptions(ui);
@@ -401,22 +320,27 @@ function renderSelectField(key, ui, type) {
     : parsedChoices.length ? parsedChoices
       : Array.isArray(ui.choices) ? ui.choices.map(value => ({ value: String(value), label: String(value) }))
         : ui.value ? [{ value: String(ui.value), label: String(ui.value) }] : [];
-  const stored = resolveMenuStoredValue(state.values[key] ?? ui.value, ui.choices, menuOptions);
-  const initial = stored && choices.some(choice => String(choice.value) === String(stored))
-    ? String(stored)
-    : (choices[0]?.value ?? "");
-  const picker = createSearchSelect({
-    choices,
-    value: initial,
-    placeholder: serverType && !choices.length ? "Connect to server first..." : "",
-    onChange: next => { state.values[key] = next; }
-  });
-  state.values[key] = picker.value;
-  if (serverType) {
-    picker.root.dataset.serverType = serverType;
-    picker.root.dataset.stateKey = key;
+  if (serverType && !choices.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "Connect to server first...";
+    select.append(opt);
   }
-  return picker.root;
+  for (const choice of choices) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    select.append(option);
+  }
+  const stored = resolveMenuStoredValue(state.values[key] ?? ui.value, ui.choices, menuOptions);
+  select.value = stored || choices[0]?.value || "";
+  state.values[key] = select.value;
+  select.addEventListener("change", () => { state.values[key] = select.value; });
+  if (serverType) {
+    select.dataset.serverType = serverType;
+    select.dataset.stateKey = key;
+  }
+  return select;
 }
 
 function renderRadioField(key, ui) {
@@ -444,7 +368,6 @@ function renderRadioField(key, ui) {
 }
 
 function renderBooleanField(key) {
-  const wrap = document.createElement("div");
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "booleanSwitch";
@@ -462,8 +385,7 @@ function renderBooleanField(key) {
     update();
   });
   update();
-  wrap.append(btn);
-  return wrap;
+  return btn;
 }
 
 function renderCheckboxField(key) {

@@ -794,100 +794,19 @@ progress {
   background: #ffffff;
 }
 
-.searchSelect {
-  position: relative;
-  width: 100%;
-}
-
-.searchSelectTrigger {
+.booleanFieldRow {
   display: flex;
+  flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  width: 100%;
-  height: 30px;
-  margin: 0;
-  padding: 6px 8px;
-  text-align: left;
+  gap: 10px;
 }
 
-.searchSelectTriggerText {
-  flex: 1;
+.booleanFieldRow > span {
+  flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  text-align: left;
+  margin-bottom: 0;
   color: var(--text);
   font-size: 12px;
-}
-
-.searchSelectTriggerText.isPlaceholder {
-  color: var(--muted);
-}
-
-.searchSelectChevron {
-  flex-shrink: 0;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.searchSelectPanel {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 50;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
-}
-
-.searchSelectInput {
-  width: 100%;
-  height: 28px;
-  margin: 0 0 6px;
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-}
-
-.searchSelectList {
-  max-height: 220px;
-  overflow-y: auto;
-}
-
-.searchSelectOption {
-  display: block;
-  width: 100%;
-  height: auto;
-  min-height: 26px;
-  margin: 0;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text);
   text-align: left;
-  font-size: 12px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.searchSelectOption:hover {
-  background: var(--panel-2);
-}
-
-.searchSelectOption.isSelected {
-  color: var(--accent);
-}
-
-.searchSelectEmpty {
-  padding: 6px 8px;
-  color: var(--muted);
-  font-size: 11px;
 }
