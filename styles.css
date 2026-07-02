@@ -392,7 +392,7 @@ button {
 #app .modeTabs button,
 #app .imageActions button,
 #app .row button,
-#app .booleanToggle button,
+#app .booleanSwitch,
 #app .seedRandom {
   margin-top: 0;
   margin-bottom: 0;
@@ -450,10 +450,6 @@ button {
 
 #app .seedRandom {
   margin-left: var(--btn-gap);
-}
-
-#app .booleanToggle button + button {
-  margin-left: 0;
 }
 
 #app .modeTabs button:first-child,
@@ -762,42 +758,55 @@ progress {
   margin: 0;
 }
 
-.booleanToggle {
-  display: flex;
-  gap: 0;
-  margin-top: 2px;
-  flex-shrink: 0;
-}
-
-.field--inline .booleanToggle {
-  margin-top: 0;
-  gap: 0;
-}
-
 .field--inline .inlineCheckbox {
   gap: 0;
   justify-content: flex-end;
 }
 
-.booleanToggle button {
-  flex: 1;
-  border-radius: 0;
+.booleanSwitch {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 38px;
+  min-width: 38px;
+  height: 22px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
   background: var(--panel);
-  color: var(--muted);
+  flex-shrink: 0;
 }
 
-.booleanToggle button:first-child {
-  border-radius: 6px 0 0 6px;
+.booleanSwitchKnob {
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--muted);
 }
 
-.booleanToggle button:last-child {
-  border-radius: 0 6px 6px 0;
-  border-left: none;
-}
-
-.booleanToggle button.active {
-  background: var(--accent);
+.booleanSwitch.on {
+  justify-content: flex-end;
   border-color: var(--accent);
-  color: #06111f;
-  font-weight: 700;
+  background: rgba(78, 161, 255, 0.35);
+}
+
+.booleanSwitch.on .booleanSwitchKnob {
+  background: #ffffff;
+}
+
+.booleanFieldRow {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.booleanFieldRow > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
 }

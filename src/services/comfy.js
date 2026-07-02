@@ -402,7 +402,58 @@ export async function fetchServerChoices() {
         }
       }
     }
+    await applySdvnAugmentation();
   } catch (error) {
     console.warn("fetchServerChoices failed", error);
   }
+}
+
+// MARK: - Bổ sung model SDVN (node class_type chứa "SDVN")
+
+const SDVN_LIB_URLS = {
+  checkpoints: "https://raw.githubusercontent.com/StableDiffusionVN/SDVN_Comfy_node/refs/heads/main/model_lib.json",
+  loras: "https://raw.githubusercontent.com/StableDiffusionVN/SDVN_Comfy_node/refs/heads/main/lora_lib.json"
+};
+const sdvnLibCache = {};
+
+async function fetchSdvnLibraryNames(type) {
+  if (sdvnLibCache[type]) return sdvnLibCache[type];
+  const url = SDVN_LIB_URLS[type];
+  if (!url) return [];
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    const obj = await response.json();
+    const names = [...new Set(Object.keys(obj || {}).filter(name => typeof name === "string" && name.trim()))];
+    sdvnLibCache[type] = names;
+    return names;
+  } catch {
+    return [];
+  }
+}
+
+/** Type checkpoints/loras có node (theo id) class_type chứa "SDVN" trong workflow JSON. */
+export function sdvnAugmentTypes(input, workflow) {
+  const out = new Set();
+  if (!workflow || typeof workflow !== "object") return out;
+  for (const item of Object.values(input || {})) {
+    const kind = canonicalDynamicType(item?.ui?.type);
+    if (kind !== "checkpoints" && kind !== "loras") continue;
+    const idStr = Array.isArray(item?.id) ? String(item.id[0] || "") : String(item?.id || "");
+    if (!idStr) continue;
+    const nodeId = idStr.split("-")[0];
+    const classType = nodeId ? workflow?.[nodeId]?.class_type : null;
+    if (typeof classType === "string" && /sdvn/i.test(classType)) out.add(kind);
+  }
+  return out;
+}
+
+/** Tính lại state.sdvnChoices (theo template hiện tại) — danh sách model SDVN bổ sung. */
+export async function applySdvnAugmentation() {
+  const next = {};
+  for (const type of sdvnAugmentTypes(state.config?.input, state.workflow)) {
+    const extra = await fetchSdvnLibraryNames(type);
+    if (extra.length) next[type] = extra;
+  }
+  state.sdvnChoices = next;
 }

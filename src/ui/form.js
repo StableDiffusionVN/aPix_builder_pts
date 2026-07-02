@@ -7,6 +7,16 @@ import { readUxFileAsDataUrl } from "../utils/files.js";
 
 const { storage } = require("uxp");
 
+// Danh sách model cho 1 type: server quét được + bổ sung từ thư viện SDVN (nếu node loader là SDVN).
+// Khi có bơm SDVN thì thêm "None" vào đầu danh sách (giống app chính).
+function resolvedServerChoices(serverType) {
+  const base = Array.isArray(state.serverChoices[serverType]) ? state.serverChoices[serverType] : [];
+  const extra = Array.isArray(state.sdvnChoices?.[serverType]) ? state.sdvnChoices[serverType] : [];
+  if (!extra.length) return base;
+  return [...new Set(["None", ...base, ...extra])];
+}
+
+
 function markdownToHtml(text) {
   return String(text)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -21,7 +31,7 @@ export function updateServerSelects() {
   const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
   for (const select of selects) {
     const serverType = select.dataset.serverType;
-    const choices = state.serverChoices[serverType];
+    const choices = resolvedServerChoices(serverType);
     if (!choices?.length) continue;
     const current = select.value;
     select.innerHTML = "";
@@ -70,10 +80,19 @@ function renderDynamicItem(item) {
   if (!item.id) return null;
 
   const key = normalizeId(item.id);
-  const field = document.createElement("label");
-  field.className = "field";
   const label = document.createElement("span");
   label.textContent = ui.label || item.key;
+
+  // Boolean: hàng riêng dạng div (flex row chắc chắn trong UXP) — nhãn trái, nút gạt phải.
+  if (type === "boolean") {
+    const row = document.createElement("div");
+    row.className = "field booleanFieldRow";
+    row.append(label, renderBooleanField(key));
+    return row;
+  }
+
+  const field = document.createElement("label");
+  field.className = "field";
   field.append(label);
 
   const isSlider = type === "slider" || ui.display === "slider";
@@ -113,9 +132,6 @@ function renderDynamicItem(item) {
     field.append(renderRadioField(key, ui));
   } else if (["dropdown", "menu"].includes(type) || isDynamic) {
     field.append(renderSelectField(key, ui, type));
-  } else if (type === "boolean") {
-    field.classList.add("field--inline");
-    field.append(renderBooleanField(key));
   } else if (type === "checkbox") {
     field.classList.add("field--inline");
     field.append(renderCheckboxField(key));
@@ -297,7 +313,7 @@ function renderNumberField(key, ui, type) {
 function renderSelectField(key, ui, type) {
   const select = document.createElement("select");
   const serverType = canonicalDynamicType(type);
-  const serverChoices = serverType ? state.serverChoices[serverType] : null;
+  const serverChoices = serverType ? resolvedServerChoices(serverType) : null;
   const menuOptions = menuChoiceOptions(ui);
   const parsedChoices = Array.isArray(ui.choices) ? parseMenuChoices(ui.choices, menuOptions) : [];
   const choices = serverChoices?.length ? serverChoices.map(value => ({ value, label: value }))
@@ -352,24 +368,24 @@ function renderRadioField(key, ui) {
 }
 
 function renderBooleanField(key) {
-  const wrap = document.createElement("div");
-  wrap.className = "booleanToggle";
-  const trueBtn = document.createElement("button");
-  trueBtn.type = "button";
-  trueBtn.textContent = "True";
-  const falseBtn = document.createElement("button");
-  falseBtn.type = "button";
-  falseBtn.textContent = "False";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "booleanSwitch";
+  btn.setAttribute("role", "switch");
+  const knob = document.createElement("span");
+  knob.className = "booleanSwitchKnob";
+  btn.append(knob);
   const update = () => {
-    const val = state.values[key];
-    trueBtn.classList.toggle("active", val === true);
-    falseBtn.classList.toggle("active", val === false);
+    const on = state.values[key] === true;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-checked", String(on));
   };
-  trueBtn.addEventListener("click", () => { state.values[key] = true; update(); });
-  falseBtn.addEventListener("click", () => { state.values[key] = false; update(); });
+  btn.addEventListener("click", () => {
+    state.values[key] = !(state.values[key] === true);
+    update();
+  });
   update();
-  wrap.append(trueBtn, falseBtn);
-  return wrap;
+  return btn;
 }
 
 function renderCheckboxField(key) {
