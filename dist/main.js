@@ -11152,9 +11152,10 @@ ${end.comment}` : end.comment;
   var browser_default = dist_exports;
 
   // src/lib/zipImport.js
+  init_browser();
   init_runninghub();
   function templatesFromZipEntries(entries, zipName) {
-    const dec = new TextDecoder();
+    const dec = { decode: (bytes) => strFromU8(bytes) };
     const byDir = {};
     for (const [entryPath, data] of Object.entries(entries || {})) {
       if (entryPath.endsWith("/")) continue;

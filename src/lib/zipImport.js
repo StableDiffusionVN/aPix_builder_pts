@@ -1,10 +1,12 @@
 import YAML from "yaml";
+import { strFromU8 } from "fflate";
 import { extractRunningHubWorkflowId, isRunningHubWfTemplate } from "../services/runninghub.js";
 
 // Dựng template item từ các entry trong tệp .zip (mỗi thư mục có app_build → 1 template).
 // entries: { "<path>": Uint8Array } (kết quả fflate.unzipSync).
+// Decode bằng strFromU8 của fflate — UXP (Photoshop) không có sẵn TextDecoder.
 export function templatesFromZipEntries(entries, zipName) {
-  const dec = new TextDecoder();
+  const dec = { decode: bytes => strFromU8(bytes) };
   const byDir = {};
   for (const [entryPath, data] of Object.entries(entries || {})) {
     if (entryPath.endsWith("/")) continue;
