@@ -415,21 +415,45 @@ const SDVN_LIB_URLS = {
   loras: "https://raw.githubusercontent.com/StableDiffusionVN/SDVN_Comfy_node/refs/heads/main/lora_lib.json"
 };
 const sdvnLibCache = {};
+// Chặn gọi lại GitHub sớm sau khi fetch lỗi (vd 429) — tránh dội bom trong lúc bị rate-limit.
+const SDVN_FAILURE_COOLDOWN_MS = 60 * 1000;
+const sdvnCooldownUntil = {};
+
+async function fetchSdvnFromGithub(type, { retries = 2 } = {}) {
+  const url = SDVN_LIB_URLS[type];
+  if (!url) return [];
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      if (response.status === 429) {
+        if (attempt < retries) {
+          const retryAfterSec = Number(response.headers.get("retry-after")) || 2 ** attempt;
+          await new Promise(resolve => setTimeout(resolve, retryAfterSec * 1000));
+          continue;
+        }
+        return null;
+      }
+      if (!response.ok) return null;
+      const obj = await response.json();
+      return [...new Set(Object.keys(obj || {}).filter(name => typeof name === "string" && name.trim()))];
+    } catch {
+      if (attempt < retries) continue;
+      return null;
+    }
+  }
+  return null;
+}
 
 async function fetchSdvnLibraryNames(type) {
   if (sdvnLibCache[type]) return sdvnLibCache[type];
-  const url = SDVN_LIB_URLS[type];
-  if (!url) return [];
-  try {
-    const response = await fetch(url);
-    if (!response.ok) return [];
-    const obj = await response.json();
-    const names = [...new Set(Object.keys(obj || {}).filter(name => typeof name === "string" && name.trim()))];
-    sdvnLibCache[type] = names;
-    return names;
-  } catch {
+  if (sdvnCooldownUntil[type] > Date.now()) return [];
+  const names = await fetchSdvnFromGithub(type);
+  if (names === null) {
+    sdvnCooldownUntil[type] = Date.now() + SDVN_FAILURE_COOLDOWN_MS;
     return [];
   }
+  sdvnLibCache[type] = names;
+  return names;
 }
 
 /** Type checkpoints/loras có node (theo id) class_type chứa "SDVN" trong workflow JSON. */
