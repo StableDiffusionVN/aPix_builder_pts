@@ -495,18 +495,20 @@ async function pollTaskOutputs(apiKey, taskId, options = {}) {
   while (true) {
     if (signal?.aborted) throw new Error("RunningHub task cancelled");
     const result = await queryTaskOutputs(apiKey, taskId, signal);
+    // RunningHub có lúc trả code dạng string ("805"/"0"...) — so sánh cả hai kiểu
+    // (giống server app chính), tránh task đã fail vẫn poll đến timeout.
     const code = result.code;
     const data = result.data;
-    if (code === 0 && data) {
+    if ((code === 0 || code === "0") && data) {
       onStatus?.("Received RunningHub outputs");
       return Array.isArray(data) ? data : [data];
     }
-    if (code === 805) {
+    if (code === 805 || code === "805") {
       const reason = data?.failedReason;
       throw new Error(reason?.exception_message || result.msg || "RunningHub task failed");
     }
-    if (code === 804) onStatus?.("RunningHub is processing...");
-    else if (code === 813) onStatus?.("RunningHub task is queued...");
+    if (code === 804 || code === "804") onStatus?.("RunningHub is processing...");
+    else if (code === 813 || code === "813") onStatus?.("RunningHub task is queued...");
     else onStatus?.(result.msg || "Waiting for RunningHub...");
     if (Date.now() - started > timeoutMs) {
       throw new Error("Timeout waiting for RunningHub outputs");
