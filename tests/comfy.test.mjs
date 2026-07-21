@@ -5,27 +5,50 @@ import {
   isLocalHost,
   normalizeComfyTarget,
   parseDataUrl,
-  sdvnAugmentTypes
+  sdvnAugmentFields
 } from "../src/services/comfy.js";
 
-test("sdvnAugmentTypes phát hiện checkpoints/loras khi node loader chứa SDVN", () => {
+test("sdvnAugmentFields per-field: chỉ field trỏ node SDVN vào map, node thường bị loại", () => {
   const input = {
     checkpoint: { id: "53-Ckpt_name", ui: { type: "checkpoints" } },
     lora: { id: "54-lora_name", ui: { type: "loras" } },
+    loraPlain: { id: "56-lora_name", ui: { type: "loras" } },
     vae: { id: "10-vae_name", ui: { type: "vae" } }
   };
   const workflow = {
     "53": { class_type: "SDVN Load Checkpoint" },
     "54": { class_type: "SDVN Load Lora" },
+    "56": { class_type: "LoraLoader" },
     "10": { class_type: "VAELoader" }
   };
-  assert.deepEqual([...sdvnAugmentTypes(input, workflow)].sort(), ["checkpoints", "loras"]);
+  assert.deepEqual(sdvnAugmentFields(input, workflow), {
+    "53-Ckpt_name": "checkpoints",
+    "54-lora_name": "loras"
+  });
 });
 
-test("sdvnAugmentTypes không bơm khi node không phải SDVN", () => {
+test("sdvnAugmentFields không bơm khi node không phải SDVN", () => {
   const input = { checkpoint: { id: "1-Ckpt_name", ui: { type: "checkpoints" } } };
   const workflow = { "1": { class_type: "CheckpointLoaderSimple" } };
-  assert.equal(sdvnAugmentTypes(input, workflow).size, 0);
+  assert.deepEqual(sdvnAugmentFields(input, workflow), {});
+});
+
+test("sdvnAugmentFields: id mảng dùng join('|'), KHÔNG duyệt field con menu-sub (top-level-only như iOS/Android)", () => {
+  const workflow = { "54": { class_type: "SDVN Load Lora" } };
+  assert.deepEqual(
+    sdvnAugmentFields({ lora: { id: ["54-lora_name", "10-extra"], ui: { type: "lora" } } }, workflow),
+    { "54-lora_name|10-extra": "loras" }
+  );
+  const menuSub = {
+    mode: {
+      ui: {
+        type: "menu-sub",
+        choices: ["A:a"],
+        sub: { a: { subLora: { id: "54-lora_name", ui: { type: "lora" } } } }
+      }
+    }
+  };
+  assert.deepEqual(sdvnAugmentFields(menuSub, workflow), {});
 });
 
 const sampleWorkflow = {

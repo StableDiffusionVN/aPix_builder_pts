@@ -7,11 +7,12 @@ import { readUxFileAsDataUrl } from "../utils/files.js";
 
 const { storage } = require("uxp");
 
-// Danh sách model cho 1 type: server quét được + bổ sung từ thư viện SDVN (nếu node loader là SDVN).
+// Danh sách model cho 1 field: server quét được theo type + bổ sung thư viện SDVN
+// CHỈ khi đúng field này trỏ node loader SDVN (per-field — state.sdvnChoices key theo field).
 // Khi có bơm SDVN thì thêm "None" vào đầu danh sách (giống app chính).
-function resolvedServerChoices(serverType) {
+function resolvedServerChoices(serverType, fieldKey) {
   const base = Array.isArray(state.serverChoices[serverType]) ? state.serverChoices[serverType] : [];
-  const extra = Array.isArray(state.sdvnChoices?.[serverType]) ? state.sdvnChoices[serverType] : [];
+  const extra = fieldKey && Array.isArray(state.sdvnChoices?.[fieldKey]) ? state.sdvnChoices[fieldKey] : [];
   if (!extra.length) return base;
   return [...new Set(["None", ...base, ...extra])];
 }
@@ -31,7 +32,7 @@ export function updateServerSelects() {
   const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
   for (const select of selects) {
     const serverType = select.dataset.serverType;
-    const choices = resolvedServerChoices(serverType);
+    const choices = resolvedServerChoices(serverType, select.dataset.stateKey);
     if (!choices?.length) continue;
     const current = select.value;
     select.innerHTML = "";
@@ -313,7 +314,7 @@ function renderNumberField(key, ui, type) {
 function renderSelectField(key, ui, type) {
   const select = document.createElement("select");
   const serverType = canonicalDynamicType(type);
-  const serverChoices = serverType ? resolvedServerChoices(serverType) : null;
+  const serverChoices = serverType ? resolvedServerChoices(serverType, key) : null;
   const menuOptions = menuChoiceOptions(ui);
   const parsedChoices = Array.isArray(ui.choices) ? parseMenuChoices(ui.choices, menuOptions) : [];
   const choices = serverChoices?.length ? serverChoices.map(value => ({ value, label: value }))

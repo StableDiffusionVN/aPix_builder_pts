@@ -108,7 +108,7 @@
     parseDataUrl: () => parseDataUrl,
     queuePrompt: () => queuePrompt,
     resolveWorkflowInput: () => resolveWorkflowInput,
-    sdvnAugmentTypes: () => sdvnAugmentTypes,
+    sdvnAugmentFields: () => sdvnAugmentFields,
     setWorkflowValue: () => setWorkflowValue,
     uploadImageToComfy: () => uploadImageToComfy,
     waitForPrompt: () => waitForPrompt,
@@ -484,25 +484,27 @@
     sdvnLibCache[type] = names;
     return names;
   }
-  function sdvnAugmentTypes(input, workflow) {
-    const out = /* @__PURE__ */ new Set();
+  function sdvnAugmentFields(input, workflow) {
+    const out = {};
     if (!workflow || typeof workflow !== "object") return out;
     for (const item of Object.values(input || {})) {
       const kind = canonicalDynamicType(item?.ui?.type);
       if (kind !== "checkpoints" && kind !== "loras") continue;
-      const idStr = Array.isArray(item?.id) ? String(item.id[0] || "") : String(item?.id || "");
-      if (!idStr) continue;
-      const nodeId = idStr.split("-")[0];
+      const idKey = normalizeId(item?.id ?? "");
+      if (!idKey) continue;
+      const nodeId = idKey.split("-")[0];
       const classType = nodeId ? workflow?.[nodeId]?.class_type : null;
-      if (typeof classType === "string" && /sdvn/i.test(classType)) out.add(kind);
+      if (typeof classType === "string" && /sdvn/i.test(classType)) out[idKey] = kind;
     }
     return out;
   }
   async function applySdvnAugmentation() {
+    const fieldMap = sdvnAugmentFields(state.config?.input, state.workflow);
+    const namesByType = {};
     const next = {};
-    for (const type of sdvnAugmentTypes(state.config?.input, state.workflow)) {
-      const extra = await fetchSdvnLibraryNames(type);
-      if (extra.length) next[type] = extra;
+    for (const [fieldKey, type] of Object.entries(fieldMap)) {
+      namesByType[type] ?? (namesByType[type] = await fetchSdvnLibraryNames(type));
+      if (namesByType[type].length) next[fieldKey] = namesByType[type];
     }
     state.sdvnChoices = next;
   }
@@ -4131,9 +4133,9 @@
   init_state();
   init_comfy();
   var { storage: storage3 } = __require("uxp");
-  function resolvedServerChoices(serverType) {
+  function resolvedServerChoices(serverType, fieldKey) {
     const base = Array.isArray(state.serverChoices[serverType]) ? state.serverChoices[serverType] : [];
-    const extra = Array.isArray(state.sdvnChoices?.[serverType]) ? state.sdvnChoices[serverType] : [];
+    const extra = fieldKey && Array.isArray(state.sdvnChoices?.[fieldKey]) ? state.sdvnChoices[fieldKey] : [];
     if (!extra.length) return base;
     return [.../* @__PURE__ */ new Set(["None", ...base, ...extra])];
   }
@@ -4144,7 +4146,7 @@
     const selects = els.dynamicForm.querySelectorAll("select[data-server-type]");
     for (const select of selects) {
       const serverType = select.dataset.serverType;
-      const choices = resolvedServerChoices(serverType);
+      const choices = resolvedServerChoices(serverType, select.dataset.stateKey);
       if (!choices?.length) continue;
       const current = select.value;
       select.innerHTML = "";
@@ -4424,7 +4426,7 @@
   function renderSelectField(key, ui, type) {
     const select = document.createElement("select");
     const serverType = canonicalDynamicType(type);
-    const serverChoices = serverType ? resolvedServerChoices(serverType) : null;
+    const serverChoices = serverType ? resolvedServerChoices(serverType, key) : null;
     const menuOptions = menuChoiceOptions(ui);
     const parsedChoices = Array.isArray(ui.choices) ? parseMenuChoices(ui.choices, menuOptions) : [];
     const choices = serverChoices?.length ? serverChoices.map((value) => ({ value, label: value })) : parsedChoices.length ? parsedChoices : Array.isArray(ui.choices) ? ui.choices.map((value) => ({ value: String(value), label: String(value) })) : ui.value ? [{ value: String(ui.value), label: String(ui.value) }] : [];
@@ -11722,10 +11724,14 @@ ${end.comment}` : end.comment;
       state.imageSources = {};
       state.imagePreviews = {};
       els.templateSelect.value = id;
+      state.sdvnChoices = {};
       renderActiveForm();
       setStatus(`Loaded workflow ${template.name}`);
       if (!isRunningHubMode()) {
         fetchServerChoices().then(() => updateServerSelects()).catch(() => {
+        });
+      } else if (isRunningHubWfMode()) {
+        applySdvnAugmentation().then(() => updateServerSelects()).catch(() => {
         });
       }
     } catch (error) {
@@ -11829,6 +11835,8 @@ ${end.comment}` : end.comment;
       } else if (nextMode === "runninghub-wf") {
         state.values = state.localValues;
         renderLocalForm();
+        applySdvnAugmentation().then(() => updateServerSelects()).catch(() => {
+        });
       } else {
         state.values = state.localValues;
         renderLocalForm();

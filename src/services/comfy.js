@@ -1,4 +1,4 @@
-import { state, setStatus, setProgress } from "../state.js";
+import { state, setStatus, setProgress, normalizeId } from "../state.js";
 
 export const DYNAMIC_TYPE_REGISTRY = {
   checkpoints:    { aliases: ["checkpoint", "ckpt"],                        node: "CheckpointLoaderSimple", field: "ckpt_name" },
@@ -456,28 +456,34 @@ async function fetchSdvnLibraryNames(type) {
   return names;
 }
 
-/** Type checkpoints/loras có node (theo id) class_type chứa "SDVN" trong workflow JSON. */
-export function sdvnAugmentTypes(input, workflow) {
-  const out = new Set();
+/** TỪNG FIELD checkpoints/loras có node class_type chứa "SDVN" trong workflow JSON
+ * → { [normalizeId(item.id)]: "checkpoints" | "loras" } (per-field — đồng bộ app chính/iOS/Android):
+ * model SDVN do node SDVN tự tải theo tên, node loader thường chọn sẽ fail khi chạy. */
+export function sdvnAugmentFields(input, workflow) {
+  const out = {};
   if (!workflow || typeof workflow !== "object") return out;
+  // CHỈ duyệt field top-level (không vào menu-sub/col) — thống nhất 5 codebase theo chuẩn
+  // iOS/Android; muốn hỗ trợ sub-field phải đổi đồng bộ cả 5 nơi một đợt.
   for (const item of Object.values(input || {})) {
     const kind = canonicalDynamicType(item?.ui?.type);
     if (kind !== "checkpoints" && kind !== "loras") continue;
-    const idStr = Array.isArray(item?.id) ? String(item.id[0] || "") : String(item?.id || "");
-    if (!idStr) continue;
-    const nodeId = idStr.split("-")[0];
+    const idKey = normalizeId(item?.id ?? "");
+    if (!idKey) continue;
+    const nodeId = idKey.split("-")[0];
     const classType = nodeId ? workflow?.[nodeId]?.class_type : null;
-    if (typeof classType === "string" && /sdvn/i.test(classType)) out.add(kind);
+    if (typeof classType === "string" && /sdvn/i.test(classType)) out[idKey] = kind;
   }
   return out;
 }
 
-/** Tính lại state.sdvnChoices (theo template hiện tại) — danh sách model SDVN bổ sung. */
+/** Tính lại state.sdvnChoices (theo template hiện tại) — { [fieldKey]: names } per-field. */
 export async function applySdvnAugmentation() {
+  const fieldMap = sdvnAugmentFields(state.config?.input, state.workflow);
+  const namesByType = {};
   const next = {};
-  for (const type of sdvnAugmentTypes(state.config?.input, state.workflow)) {
-    const extra = await fetchSdvnLibraryNames(type);
-    if (extra.length) next[type] = extra;
+  for (const [fieldKey, type] of Object.entries(fieldMap)) {
+    namesByType[type] ??= await fetchSdvnLibraryNames(type);
+    if (namesByType[type].length) next[fieldKey] = namesByType[type];
   }
   state.sdvnChoices = next;
 }

@@ -32,7 +32,8 @@ import {
   getHistory,
   collectOutputs,
   fetchOutputBytes,
-  fetchServerChoices
+  fetchServerChoices,
+  applySdvnAugmentation
 } from "./services/comfy.js";
 
 import {
@@ -622,10 +623,17 @@ async function selectTemplate(id) {
     state.imageSources = {};
     state.imagePreviews = {};
     els.templateSelect.value = id;
+    // Xóa thư viện SDVN của template TRƯỚC — tránh bơm nhầm map cũ vào field trùng
+    // node id của template mới (per-field key theo id nên có thể va chạm giữa template).
+    state.sdvnChoices = {};
     renderActiveForm();
     setStatus(`Loaded workflow ${template.name}`);
     if (!isRunningHubMode()) {
       fetchServerChoices().then(() => updateServerSelects()).catch(() => {});
+    } else if (isRunningHubWfMode()) {
+      // RH Workflow cũng có node SDVN trong workflow JSON — augment chỉ cần fetch GitHub,
+      // không cần server ComfyUI.
+      applySdvnAugmentation().then(() => updateServerSelects()).catch(() => {});
     }
   } catch (error) {
     state.selectedTemplate = null;
@@ -733,6 +741,8 @@ function switchExecutionMode(mode) {
     } else if (nextMode === "runninghub-wf") {
       state.values = state.localValues;
       renderLocalForm();
+      // Tính lại thư viện SDVN theo template/workflow đang mở ở mode này (fetch GitHub, không cần server).
+      applySdvnAugmentation().then(() => updateServerSelects()).catch(() => {});
     } else {
       state.values = state.localValues;
       renderLocalForm();
