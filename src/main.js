@@ -74,6 +74,7 @@ import {
   parsePromptTips,
   prepareNodeInfoList,
   RUNNINGHUB_APP_OPTIONS,
+  runWithRhFailover,
   setRunningHubAppOptions,
   runningHubTaskOptions,
   saveExecutionMode,
@@ -775,21 +776,25 @@ async function runRunningHubWorkflow(selectionInfo) {
     }
   }
 
-  const nodeInfoList = await prepareNodeInfoList(
-    apiKey,
-    nodesWithValues(state.runningHubNodes, state.values),
-    state.abortController.signal,
-    setStatus
-  );
-  setStatus("Submitting RunningHub task...");
-  const submitted = await submitAiAppTask(apiKey, webappId, nodeInfoList, state.abortController.signal);
-  const taskId = submitted.taskId;
-  if (!taskId) throw new Error("RunningHub did not return taskId");
-  state.activeRunningHubTaskId = String(taskId);
-  setStatus(`RunningHub task ${taskId} queued`);
-  const outputs = await waitForTaskOutputs(apiKey, taskId, {
-    signal: state.abortController.signal,
-    onStatus: setStatus
+  // Toàn bộ upload → submit → poll nằm trong closure failover: đổi key phải upload lại
+  // (fileName upload gắn với từng account RunningHub).
+  const outputs = await runWithRhFailover(apiKey, setStatus, async key => {
+    const nodeInfoList = await prepareNodeInfoList(
+      key,
+      nodesWithValues(state.runningHubNodes, state.values),
+      state.abortController.signal,
+      setStatus
+    );
+    setStatus("Submitting RunningHub task...");
+    const submitted = await submitAiAppTask(key, webappId, nodeInfoList, state.abortController.signal);
+    const taskId = submitted.taskId;
+    if (!taskId) throw new Error("RunningHub did not return taskId");
+    state.activeRunningHubTaskId = String(taskId);
+    setStatus(`RunningHub task ${taskId} queued`);
+    return waitForTaskOutputs(key, taskId, {
+      signal: state.abortController.signal,
+      onStatus: setStatus
+    });
   });
   let importedCount = 0;
   for (const [index, output] of outputs.entries()) {
@@ -866,49 +871,53 @@ async function runRunningHubWfWorkflow(selectionInfo) {
   const normalized = await normalizeValues(request);
   const taskOptions = runningHubTaskOptions(state.config);
   const signal = state.abortController.signal;
-  let submitData;
 
-  if (useSavedJson) {
-    setStatus("Patching workflow for RunningHub...");
-    const patchedWorkflow = await buildPatchedRunningHubWorkflow(
-      state.workflow,
-      normalized,
-      apiKey,
-      { signal, onStatus: setStatus }
-    );
-    setStatus("Submitting RunningHub workflow task...");
-    submitData = await submitWorkflowTask(apiKey, {
-      workflow: patchedWorkflow,
-      workflowId,
-      ...taskOptions
-    }, signal);
-  } else {
-    setStatus("Preparing RunningHub node list...");
-    const nodeInfoList = await buildRunningHubNodeInfoList(normalized, apiKey, {
+  // Toàn bộ upload/patch → submit → poll nằm trong closure failover: đổi key phải upload lại
+  // (fileName upload gắn với từng account RunningHub).
+  const outputs = await runWithRhFailover(apiKey, setStatus, async key => {
+    let submitData;
+    if (useSavedJson) {
+      setStatus("Patching workflow for RunningHub...");
+      const patchedWorkflow = await buildPatchedRunningHubWorkflow(
+        state.workflow,
+        normalized,
+        key,
+        { signal, onStatus: setStatus }
+      );
+      setStatus("Submitting RunningHub workflow task...");
+      submitData = await submitWorkflowTask(key, {
+        workflow: patchedWorkflow,
+        workflowId,
+        ...taskOptions
+      }, signal);
+    } else {
+      setStatus("Preparing RunningHub node list...");
+      const nodeInfoList = await buildRunningHubNodeInfoList(normalized, key, {
+        signal,
+        onStatus: setStatus
+      });
+      setStatus("Submitting RunningHub workflow task...");
+      submitData = await submitWorkflowTask(key, {
+        nodeInfoList,
+        workflowId,
+        ...taskOptions
+      }, signal);
+    }
+
+    const promptTips = parsePromptTips(submitData.promptTips);
+    if (promptTips?.node_errors && Object.keys(promptTips.node_errors).length > 0) {
+      const firstError = Object.entries(promptTips.node_errors)[0];
+      throw new Error(`Node ${firstError[0]} error: ${JSON.stringify(firstError[1])}`);
+    }
+
+    const taskId = submitData.taskId;
+    if (!taskId) throw new Error("RunningHub did not return taskId");
+    state.activeRunningHubTaskId = String(taskId);
+    setStatus(`RunningHub task ${taskId} queued`);
+    return waitForTaskOutputs(key, taskId, {
       signal,
       onStatus: setStatus
     });
-    setStatus("Submitting RunningHub workflow task...");
-    submitData = await submitWorkflowTask(apiKey, {
-      nodeInfoList,
-      workflowId,
-      ...taskOptions
-    }, signal);
-  }
-
-  const promptTips = parsePromptTips(submitData.promptTips);
-  if (promptTips?.node_errors && Object.keys(promptTips.node_errors).length > 0) {
-    const firstError = Object.entries(promptTips.node_errors)[0];
-    throw new Error(`Node ${firstError[0]} error: ${JSON.stringify(firstError[1])}`);
-  }
-
-  const taskId = submitData.taskId;
-  if (!taskId) throw new Error("RunningHub did not return taskId");
-  state.activeRunningHubTaskId = String(taskId);
-  setStatus(`RunningHub task ${taskId} queued`);
-  const outputs = await waitForTaskOutputs(apiKey, taskId, {
-    signal,
-    onStatus: setStatus
   });
   let importedCount = 0;
   for (const [index, output] of outputs.entries()) {

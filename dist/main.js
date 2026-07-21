@@ -449,20 +449,40 @@
       console.warn("fetchServerChoices failed", error);
     }
   }
-  async function fetchSdvnLibraryNames(type) {
-    if (sdvnLibCache[type]) return sdvnLibCache[type];
+  async function fetchSdvnFromGithub(type, { retries = 2 } = {}) {
     const url = SDVN_LIB_URLS[type];
     if (!url) return [];
-    try {
-      const response = await fetch(url);
-      if (!response.ok) return [];
-      const obj = await response.json();
-      const names = [...new Set(Object.keys(obj || {}).filter((name) => typeof name === "string" && name.trim()))];
-      sdvnLibCache[type] = names;
-      return names;
-    } catch {
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const response = await fetch(url);
+        if (response.status === 429) {
+          if (attempt < retries) {
+            const retryAfterSec = Number(response.headers.get("retry-after")) || 2 ** attempt;
+            await new Promise((resolve) => setTimeout(resolve, retryAfterSec * 1e3));
+            continue;
+          }
+          return null;
+        }
+        if (!response.ok) return null;
+        const obj = await response.json();
+        return [...new Set(Object.keys(obj || {}).filter((name) => typeof name === "string" && name.trim()))];
+      } catch {
+        if (attempt < retries) continue;
+        return null;
+      }
+    }
+    return null;
+  }
+  async function fetchSdvnLibraryNames(type) {
+    if (sdvnLibCache[type]) return sdvnLibCache[type];
+    if (sdvnCooldownUntil[type] > Date.now()) return [];
+    const names = await fetchSdvnFromGithub(type);
+    if (names === null) {
+      sdvnCooldownUntil[type] = Date.now() + SDVN_FAILURE_COOLDOWN_MS;
       return [];
     }
+    sdvnLibCache[type] = names;
+    return names;
   }
   function sdvnAugmentTypes(input, workflow) {
     const out = /* @__PURE__ */ new Set();
@@ -486,7 +506,7 @@
     }
     state.sdvnChoices = next;
   }
-  var DYNAMIC_TYPE_REGISTRY, DYNAMIC_TYPE_ALIAS_MAP, sessionClientId, promptListeners, socketUrl, SDVN_LIB_URLS, sdvnLibCache;
+  var DYNAMIC_TYPE_REGISTRY, DYNAMIC_TYPE_ALIAS_MAP, sessionClientId, promptListeners, socketUrl, SDVN_LIB_URLS, sdvnLibCache, SDVN_FAILURE_COOLDOWN_MS, sdvnCooldownUntil;
   var init_comfy = __esm({
     "src/services/comfy.js"() {
       init_state();
@@ -520,6 +540,8 @@
         loras: "https://raw.githubusercontent.com/StableDiffusionVN/SDVN_Comfy_node/refs/heads/main/lora_lib.json"
       };
       sdvnLibCache = {};
+      SDVN_FAILURE_COOLDOWN_MS = 60 * 1e3;
+      sdvnCooldownUntil = {};
     }
   });
 
@@ -695,7 +717,9 @@
       throw new Error(text || `RunningHub HTTP ${response.status}`);
     }
     if (!response.ok) {
-      throw new Error(data.msg || data.message || text || `RunningHub HTTP ${response.status}`);
+      const error = new Error(data.msg || data.message || text || `RunningHub HTTP ${response.status}`);
+      if (data.code != null) error.code = data.code;
+      throw error;
     }
     return data;
   }
@@ -703,9 +727,45 @@
     const data = await readJsonResponse(response);
     const code = data.code;
     if (code !== 0 && code !== "0") {
-      throw new Error(data.msg || data.message || `RunningHub error ${code}`);
+      const error = new Error(data.msg || data.message || `RunningHub error ${code}`);
+      error.code = code;
+      throw error;
     }
     return data;
+  }
+  function isRhInsufficientCoins(error) {
+    const code = Number(error?.code);
+    if ([1001, 1002, 1004, 1006, 1007].includes(code)) return true;
+    return /coin|balance|insufficient|credit|hết|không đủ|不足|余额|积分/i.test(String(error?.message || ""));
+  }
+  function isRhQueueMaxed(error) {
+    const code = Number(error?.code);
+    if (code === 421 || code === 415) return true;
+    return /TASK_QUEUE_MAXED/i.test(String(error?.message || "")) || /queue.*max/i.test(String(error?.message || ""));
+  }
+  function parseRhApiKeys(apiKey) {
+    return String(apiKey || "").split(/[\n,]+/).map((key) => key.trim()).filter(Boolean);
+  }
+  async function runWithRhFailover(apiKey, onStatus, runOnce) {
+    const keys = parseRhApiKeys(apiKey);
+    if (!keys.length) throw new Error("Missing RunningHub API key");
+    let lastError;
+    for (let index = 0; index < keys.length; index += 1) {
+      try {
+        return await runOnce(keys[index]);
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        lastError = error;
+        const retryable = isRhInsufficientCoins(error) || isRhQueueMaxed(error);
+        if (retryable && index < keys.length - 1) {
+          const reason = isRhQueueMaxed(error) ? "busy" : "out of coins";
+          onStatus?.(`Key #${index + 1} ${reason} \u2014 switching to key #${index + 2}...`);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
   }
   function withSignal(options = {}, signal) {
     return signal ? { ...options, signal } : options;
@@ -872,12 +932,12 @@
     const data = await readRunningHubEnvelope(response);
     return data.data || {};
   }
-  async function queryTaskOutputs(apiKey, taskId, signal) {
+  async function queryTaskOutputs(apiKey, taskId2, signal) {
     const response = await fetch(`${RUNNINGHUB_BASE}/task/openapi/outputs`, {
       ...withSignal({}, signal),
       method: "POST",
       headers: rhHeaders(apiKey, { "content-type": "application/json" }),
-      body: JSON.stringify({ apiKey, taskId })
+      body: JSON.stringify({ apiKey, taskId: taskId2 })
     });
     return readJsonResponse(response);
   }
@@ -898,8 +958,8 @@
       }, { once: true });
     });
   }
-  async function cancelRunningHubTask(apiKey, taskId) {
-    const id = String(taskId || "").trim();
+  async function cancelRunningHubTask(apiKey, taskId2) {
+    const id = String(taskId2 || "").trim();
     if (!apiKey || !id) return;
     try {
       await fetch(`${RUNNINGHUB_BASE}/task/openapi/cancel`, {
@@ -910,18 +970,18 @@
     } catch {
     }
   }
-  async function waitForTaskOutputs(apiKey, taskId, options = {}) {
+  async function waitForTaskOutputs(apiKey, taskId2, options = {}) {
     const { signal } = options;
     try {
-      return await pollTaskOutputs(apiKey, taskId, options);
+      return await pollTaskOutputs(apiKey, taskId2, options);
     } catch (error) {
       if (signal?.aborted || error?.name === "AbortError" || /cancelled/i.test(String(error?.message || ""))) {
-        void cancelRunningHubTask(apiKey, taskId);
+        void cancelRunningHubTask(apiKey, taskId2);
       }
       throw error;
     }
   }
-  async function pollTaskOutputs(apiKey, taskId, options = {}) {
+  async function pollTaskOutputs(apiKey, taskId2, options = {}) {
     const {
       timeoutMs = DEFAULT_TIMEOUT_MS,
       pollMs = DEFAULT_POLL_MS,
@@ -931,19 +991,19 @@
     const started = Date.now();
     while (true) {
       if (signal?.aborted) throw new Error("RunningHub task cancelled");
-      const result = await queryTaskOutputs(apiKey, taskId, signal);
+      const result = await queryTaskOutputs(apiKey, taskId2, signal);
       const code = result.code;
       const data = result.data;
-      if (code === 0 && data) {
+      if ((code === 0 || code === "0") && data) {
         onStatus?.("Received RunningHub outputs");
         return Array.isArray(data) ? data : [data];
       }
-      if (code === 805) {
+      if (code === 805 || code === "805") {
         const reason = data?.failedReason;
         throw new Error(reason?.exception_message || result.msg || "RunningHub task failed");
       }
-      if (code === 804) onStatus?.("RunningHub is processing...");
-      else if (code === 813) onStatus?.("RunningHub task is queued...");
+      if (code === 804 || code === "804") onStatus?.("RunningHub is processing...");
+      else if (code === 813 || code === "813") onStatus?.("RunningHub task is queued...");
       else onStatus?.(result.msg || "Waiting for RunningHub...");
       if (Date.now() - started > timeoutMs) {
         throw new Error("Timeout waiting for RunningHub outputs");
@@ -11808,21 +11868,23 @@ ${end.comment}` : end.comment;
         }
       }
     }
-    const nodeInfoList = await prepareNodeInfoList(
-      apiKey,
-      nodesWithValues(state.runningHubNodes, state.values),
-      state.abortController.signal,
-      setStatus
-    );
-    setStatus("Submitting RunningHub task...");
-    const submitted = await submitAiAppTask(apiKey, webappId, nodeInfoList, state.abortController.signal);
-    const taskId = submitted.taskId;
-    if (!taskId) throw new Error("RunningHub did not return taskId");
-    state.activeRunningHubTaskId = String(taskId);
-    setStatus(`RunningHub task ${taskId} queued`);
-    const outputs = await waitForTaskOutputs(apiKey, taskId, {
-      signal: state.abortController.signal,
-      onStatus: setStatus
+    const outputs = await runWithRhFailover(apiKey, setStatus, async (key) => {
+      const nodeInfoList = await prepareNodeInfoList(
+        key,
+        nodesWithValues(state.runningHubNodes, state.values),
+        state.abortController.signal,
+        setStatus
+      );
+      setStatus("Submitting RunningHub task...");
+      const submitted = await submitAiAppTask(key, webappId, nodeInfoList, state.abortController.signal);
+      const taskId2 = submitted.taskId;
+      if (!taskId2) throw new Error("RunningHub did not return taskId");
+      state.activeRunningHubTaskId = String(taskId2);
+      setStatus(`RunningHub task ${taskId2} queued`);
+      return waitForTaskOutputs(key, taskId2, {
+        signal: state.abortController.signal,
+        onStatus: setStatus
+      });
     });
     let importedCount = 0;
     for (const [index, output] of outputs.entries()) {
@@ -11889,46 +11951,48 @@ ${end.comment}` : end.comment;
     const normalized = await normalizeValues(request);
     const taskOptions = runningHubTaskOptions(state.config);
     const signal = state.abortController.signal;
-    let submitData;
-    if (useSavedJson) {
-      setStatus("Patching workflow for RunningHub...");
-      const patchedWorkflow = await buildPatchedRunningHubWorkflow(
-        state.workflow,
-        normalized,
-        apiKey,
-        { signal, onStatus: setStatus }
-      );
-      setStatus("Submitting RunningHub workflow task...");
-      submitData = await submitWorkflowTask(apiKey, {
-        workflow: patchedWorkflow,
-        workflowId,
-        ...taskOptions
-      }, signal);
-    } else {
-      setStatus("Preparing RunningHub node list...");
-      const nodeInfoList = await buildRunningHubNodeInfoList(normalized, apiKey, {
+    const outputs = await runWithRhFailover(apiKey, setStatus, async (key) => {
+      let submitData;
+      if (useSavedJson) {
+        setStatus("Patching workflow for RunningHub...");
+        const patchedWorkflow = await buildPatchedRunningHubWorkflow(
+          state.workflow,
+          normalized,
+          key,
+          { signal, onStatus: setStatus }
+        );
+        setStatus("Submitting RunningHub workflow task...");
+        submitData = await submitWorkflowTask(key, {
+          workflow: patchedWorkflow,
+          workflowId,
+          ...taskOptions
+        }, signal);
+      } else {
+        setStatus("Preparing RunningHub node list...");
+        const nodeInfoList = await buildRunningHubNodeInfoList(normalized, key, {
+          signal,
+          onStatus: setStatus
+        });
+        setStatus("Submitting RunningHub workflow task...");
+        submitData = await submitWorkflowTask(key, {
+          nodeInfoList,
+          workflowId,
+          ...taskOptions
+        }, signal);
+      }
+      const promptTips = parsePromptTips(submitData.promptTips);
+      if (promptTips?.node_errors && Object.keys(promptTips.node_errors).length > 0) {
+        const firstError = Object.entries(promptTips.node_errors)[0];
+        throw new Error(`Node ${firstError[0]} error: ${JSON.stringify(firstError[1])}`);
+      }
+      const taskId2 = submitData.taskId;
+      if (!taskId2) throw new Error("RunningHub did not return taskId");
+      state.activeRunningHubTaskId = String(taskId2);
+      setStatus(`RunningHub task ${taskId2} queued`);
+      return waitForTaskOutputs(key, taskId2, {
         signal,
         onStatus: setStatus
       });
-      setStatus("Submitting RunningHub workflow task...");
-      submitData = await submitWorkflowTask(apiKey, {
-        nodeInfoList,
-        workflowId,
-        ...taskOptions
-      }, signal);
-    }
-    const promptTips = parsePromptTips(submitData.promptTips);
-    if (promptTips?.node_errors && Object.keys(promptTips.node_errors).length > 0) {
-      const firstError = Object.entries(promptTips.node_errors)[0];
-      throw new Error(`Node ${firstError[0]} error: ${JSON.stringify(firstError[1])}`);
-    }
-    const taskId = submitData.taskId;
-    if (!taskId) throw new Error("RunningHub did not return taskId");
-    state.activeRunningHubTaskId = String(taskId);
-    setStatus(`RunningHub task ${taskId} queued`);
-    const outputs = await waitForTaskOutputs(apiKey, taskId, {
-      signal,
-      onStatus: setStatus
     });
     let importedCount = 0;
     for (const [index, output] of outputs.entries()) {

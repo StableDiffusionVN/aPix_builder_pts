@@ -226,7 +226,9 @@ async function readJsonResponse(response) {
     throw new Error(text || `RunningHub HTTP ${response.status}`);
   }
   if (!response.ok) {
-    throw new Error(data.msg || data.message || text || `RunningHub HTTP ${response.status}`);
+    const error = new Error(data.msg || data.message || text || `RunningHub HTTP ${response.status}`);
+    if (data.code != null) error.code = data.code;
+    throw error;
   }
   return data;
 }
@@ -235,9 +237,57 @@ async function readRunningHubEnvelope(response) {
   const data = await readJsonResponse(response);
   const code = data.code;
   if (code !== 0 && code !== "0") {
-    throw new Error(data.msg || data.message || `RunningHub error ${code}`);
+    // Gắn code vào error để failover phân loại (hết điểm / bận) — đồng bộ extension.
+    const error = new Error(data.msg || data.message || `RunningHub error ${code}`);
+    error.code = code;
+    throw error;
   }
   return data;
+}
+
+// MARK: - Failover key pool (đồng bộ extension src/services/runningHub.js)
+
+/** Lỗi hết điểm (insufficient coins) → thử key khác. */
+export function isRhInsufficientCoins(error) {
+  const code = Number(error?.code);
+  if ([1001, 1002, 1004, 1006, 1007].includes(code)) return true;
+  return /coin|balance|insufficient|credit|hết|không đủ|不足|余额|积分/i.test(String(error?.message || ""));
+}
+
+/** Lỗi hàng đợi đầy / key bận (TASK_QUEUE_MAXED) → thử key khác. */
+export function isRhQueueMaxed(error) {
+  const code = Number(error?.code);
+  if (code === 421 || code === 415) return true;
+  return /TASK_QUEUE_MAXED/i.test(String(error?.message || "")) || /queue.*max/i.test(String(error?.message || ""));
+}
+
+/** Tách chuỗi key thành danh sách (mỗi dòng hoặc dấu phẩy một key) → pool failover. */
+export function parseRhApiKeys(apiKey) {
+  return String(apiKey || "").split(/[\n,]+/).map(key => key.trim()).filter(Boolean);
+}
+
+/** Chạy qua pool key: hết điểm/bận → tự chuyển key kế. Upload phải nằm trong runOnce
+ * (fileName upload gắn với từng account RunningHub). */
+export async function runWithRhFailover(apiKey, onStatus, runOnce) {
+  const keys = parseRhApiKeys(apiKey);
+  if (!keys.length) throw new Error("Missing RunningHub API key");
+  let lastError;
+  for (let index = 0; index < keys.length; index += 1) {
+    try {
+      return await runOnce(keys[index]);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      lastError = error;
+      const retryable = isRhInsufficientCoins(error) || isRhQueueMaxed(error);
+      if (retryable && index < keys.length - 1) {
+        const reason = isRhQueueMaxed(error) ? "busy" : "out of coins";
+        onStatus?.(`Key #${index + 1} ${reason} — switching to key #${index + 2}...`);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
 }
 
 function withSignal(options = {}, signal) {

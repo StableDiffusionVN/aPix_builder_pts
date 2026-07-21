@@ -3,10 +3,14 @@ import test from "node:test";
 import {
   extractRunningHubWorkflowId,
   inferRunningHubFieldType,
+  isRhInsufficientCoins,
+  isRhQueueMaxed,
   isRunningHubWfTemplate,
+  parseRhApiKeys,
   parseWorkflowFieldId,
   payloadToRunningHubNodes,
   runningHubTaskOptions,
+  runWithRhFailover,
   usesSavedWorkflowJson
 } from "../src/services/runninghub.js";
 
@@ -69,4 +73,62 @@ test("extractRunningHubWorkflowId reads yaml raw fallback", () => {
 
 test("inferRunningHubFieldType handles upload objects", () => {
   assert.equal(inferRunningHubFieldType("image", { kind: "upload", blob: {} }), "IMAGE");
+});
+
+test("parseRhApiKeys tách key theo dấu phẩy/xuống dòng", () => {
+  assert.deepEqual(parseRhApiKeys("key1, key2\nkey3,,"), ["key1", "key2", "key3"]);
+  assert.deepEqual(parseRhApiKeys(""), []);
+});
+
+test("isRhInsufficientCoins nhận diện code và message", () => {
+  assert.equal(isRhInsufficientCoins({ code: 1001 }), true);
+  assert.equal(isRhInsufficientCoins({ code: "1004" }), true);
+  assert.equal(isRhInsufficientCoins({ message: "Số dư không đủ" }), true);
+  assert.equal(isRhInsufficientCoins({ message: "积分不足" }), true);
+  assert.equal(isRhInsufficientCoins({ code: 805, message: "task failed" }), false);
+});
+
+test("isRhQueueMaxed nhận diện 421/415/TASK_QUEUE_MAXED", () => {
+  assert.equal(isRhQueueMaxed({ code: 421 }), true);
+  assert.equal(isRhQueueMaxed({ code: "415" }), true);
+  assert.equal(isRhQueueMaxed({ message: "TASK_QUEUE_MAXED" }), true);
+  assert.equal(isRhQueueMaxed({ code: 805 }), false);
+});
+
+test("runWithRhFailover chuyển key khi hết điểm, giữ nguyên lỗi khác", async () => {
+  const attempts = [];
+  const result = await runWithRhFailover("k1,k2", null, async key => {
+    attempts.push(key);
+    if (key === "k1") {
+      const error = new Error("insufficient coins");
+      error.code = 1001;
+      throw error;
+    }
+    return `ok-${key}`;
+  });
+  assert.equal(result, "ok-k2");
+  assert.deepEqual(attempts, ["k1", "k2"]);
+
+  // Lỗi không retryable (805) → ném ngay, không thử key kế.
+  const tried = [];
+  await assert.rejects(
+    runWithRhFailover("k1,k2", null, async key => {
+      tried.push(key);
+      const error = new Error("task failed");
+      error.code = 805;
+      throw error;
+    }),
+    /task failed/
+  );
+  assert.deepEqual(tried, ["k1"]);
+
+  // AbortError → ném ngay kể cả retryable đứng sau.
+  await assert.rejects(
+    runWithRhFailover("k1,k2", null, async () => {
+      const error = new Error("cancelled");
+      error.name = "AbortError";
+      throw error;
+    }),
+    { name: "AbortError" }
+  );
 });
