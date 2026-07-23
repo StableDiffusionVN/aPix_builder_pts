@@ -198,14 +198,22 @@ function parseDataUrl(dataUrl) {
 
 export function listNodeChoices(node) {
   const data = node.fieldData;
-  if (Array.isArray(data)) return data.map(normalizeChoice).filter(Boolean);
+  // ComfyUI COMBO trả tuple [[...options], {config}] — lấy mảng con đầu làm danh sách chọn.
+  const fromArray = arr => (Array.isArray(arr[0]) ? arr[0] : arr).map(normalizeChoice).filter(Boolean);
+  if (Array.isArray(data)) {
+    const choices = fromArray(data);
+    if (choices.length) return choices;
+  }
   if (Array.isArray(data?.options)) return data.options.map(normalizeChoice).filter(Boolean);
   if (Array.isArray(data?.values)) return data.values.map(normalizeChoice).filter(Boolean);
   if (Array.isArray(data?.choices)) return data.choices.map(normalizeChoice).filter(Boolean);
   if (typeof data === "string") {
     try {
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) return parsed.map(normalizeChoice).filter(Boolean);
+      if (Array.isArray(parsed)) {
+        const choices = fromArray(parsed);
+        if (choices.length) return choices;
+      }
     } catch {}
   }
   return node.fieldValue ? [String(node.fieldValue)] : [];
