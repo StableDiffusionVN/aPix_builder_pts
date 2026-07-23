@@ -55,7 +55,7 @@ export function isDefaultRhWebapp(id) {
 }
 
 const DEFAULT_POLL_MS = 5000;
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 
 export function normalizeExecutionMode(mode) {
   if (mode === "runninghub" || mode === "runninghub-app") return "runninghub-app";
