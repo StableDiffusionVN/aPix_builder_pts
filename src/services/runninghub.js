@@ -419,6 +419,9 @@ export async function prepareNodeInfoList(apiKey, nodes, signal, onStatus) {
     if (node.fieldValue?.kind === "upload" || (typeof node.fieldValue === "string" && node.fieldValue.startsWith("data:"))) {
       uploadIndex += 1;
     }
+    // Bỏ node giá trị trống khỏi nodeInfoList → RunningHub dùng tham số mặc định của app
+    // (gửi fieldValue rỗng làm API lỗi).
+    if (fieldValue == null || !String(fieldValue).trim()) continue;
     prepared.push({
       nodeId: String(node.nodeId),
       fieldName: node.fieldName,

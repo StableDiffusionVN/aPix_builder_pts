@@ -881,6 +881,7 @@
       if (node.fieldValue?.kind === "upload" || typeof node.fieldValue === "string" && node.fieldValue.startsWith("data:")) {
         uploadIndex += 1;
       }
+      if (fieldValue == null || !String(fieldValue).trim()) continue;
       prepared.push({
         nodeId: String(node.nodeId),
         fieldName: node.fieldName,
@@ -1093,7 +1094,7 @@
       }));
       RUNNINGHUB_APP_OPTIONS = [...BUILTIN_RH_APP_OPTIONS];
       DEFAULT_POLL_MS = 5e3;
-      DEFAULT_TIMEOUT_MS = 10 * 60 * 1e3;
+      DEFAULT_TIMEOUT_MS = 20 * 60 * 1e3;
     }
   });
 
